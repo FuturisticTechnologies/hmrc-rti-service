@@ -1,0 +1,93 @@
+name: HMRC RTI service CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "migrations/**"
+      - ".github/workflows/ci-dotnet.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "migrations/**"
+      - ".github/workflows/ci-dotnet.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: payroll
+          POSTGRES_PASSWORD: payroll_dev_pwd
+          POSTGRES_DB: payroll
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U payroll -d payroll"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+      ConnectionStrings__Postgres: Host=localhost;Port=5432;Database=payroll;Username=payroll;Password=payroll_dev_pwd
+      PlatformAuth__SecretKey: ci-secret-key-at-least-32-characters-long
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore src/Hmrc.Rti.Api/Hmrc.Rti.Api.csproj tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj
+
+      - name: Build
+        run: dotnet build tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Verify migrations apply to a clean database
+        run: |
+          PGPASSWORD=payroll_dev_pwd psql -h localhost -U payroll -d payroll -v ON_ERROR_STOP=1 -f migrations/0001_rti_schema.sql
+          # Re-running must be a no-op: the migrator applies each file once, but
+          # the SQL itself is written to be idempotent as a second line of defence.
+          PGPASSWORD=payroll_dev_pwd psql -h localhost -U payroll -d payroll -v ON_ERROR_STOP=1 -f migrations/0001_rti_schema.sql
+
+      - name: Assert row-level security is enabled and FORCED
+        run: |
+          PGPASSWORD=payroll_dev_pwd psql -h localhost -U payroll -d payroll -v ON_ERROR_STOP=1 -c "
+            DO \$\$
+            DECLARE bad text;
+            BEGIN
+              SELECT string_agg(relname, ', ') INTO bad
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'rti'
+                AND c.relkind = 'r'
+                AND c.relname IN ('rti_submissions', 'rti_submission_events')
+                AND NOT (c.relrowsecurity AND c.relforcerowsecurity);
+              IF bad IS NOT NULL THEN
+                RAISE EXCEPTION 'Tables without ENABLE+FORCE row level security: %', bad;
+              END IF;
+            END \$\$;"
