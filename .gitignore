@@ -1,0 +1,13 @@
+# .NET build output
+bin/
+obj/
+TestResults/
+
+# Local / IDE
+.vs/
+.vscode/
+*.user
+
+# Local overrides and secrets - never commit
+appsettings.Development.json
+.env
