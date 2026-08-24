@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
 // Submission orchestration.
 //
-// Every status change goes through Transition(), which refuses any move the
-// state machine does not allow and appends an audit event. There is no code path
-// that sets Status directly - that is what makes the event log trustworthy.
+// Every status change goes through RtiSubmission.TransitionTo(), which validates
+// the move and appends the audit event in one step. Status has a private setter,
+// so there is no code path that bypasses the state machine.
 // ---------------------------------------------------------------------------
 using Hmrc.Rti.Api.Domain;
 using Hmrc.Rti.Api.Infrastructure;
@@ -128,7 +128,6 @@ public sealed class SubmissionService(
         {
             TenantId = tenant.TenantId,
             SubmissionType = RtiSubmissionType.Fps,
-            Status = RtiSubmissionStatus.Draft,
             TaxYear = payRun.PayPeriod.TaxYear,
             PeriodNumber = payRun.PayPeriod.PeriodNumber,
             PayRunId = payRun.Id,
@@ -147,8 +146,10 @@ public sealed class SubmissionService(
         submission.PayloadHash = RtiEnvelopeBuilder.Hash(submission.Payload);
 
         db.Submissions.Add(submission);
-        Append(submission, "created",
-            $"FPS built from pay run {payRun.Id} ({payRun.EmployeeCount} employees).");
+        db.SubmissionEvents.Add(submission.AppendEvent(
+            "created",
+            $"FPS built from pay run {payRun.Id} ({payRun.EmployeeCount} employees).",
+            tenant.UserId));
 
         var validation = RtiEnvelopeBuilder.ValidateFps(
             payRun, submission.EmployerPayeReference, submission.AccountsOfficeReference);
@@ -174,7 +175,6 @@ public sealed class SubmissionService(
         {
             TenantId = tenant.TenantId,
             SubmissionType = RtiSubmissionType.Eps,
-            Status = RtiSubmissionStatus.Draft,
             TaxYear = request.TaxYear,
             PeriodNumber = request.PeriodNumber,
             EmployerPayeReference = request.EmployerPayeReference.Trim(),
@@ -194,8 +194,10 @@ public sealed class SubmissionService(
         submission.PayloadHash = RtiEnvelopeBuilder.Hash(submission.Payload);
 
         db.Submissions.Add(submission);
-        Append(submission, "created",
-            $"EPS built for {RtiEnvelopeBuilder.FormatTaxYear(request.TaxYear)} period {request.PeriodNumber}.");
+        db.SubmissionEvents.Add(submission.AppendEvent(
+            "created",
+            $"EPS built for {RtiEnvelopeBuilder.FormatTaxYear(request.TaxYear)} period {request.PeriodNumber}.",
+            tenant.UserId));
 
         var validation = RtiEnvelopeBuilder.ValidateEps(
             request.TaxYear, request.PeriodNumber,
@@ -220,7 +222,8 @@ public sealed class SubmissionService(
 
         if (submission.Status == RtiSubmissionStatus.Validated)
         {
-            Transition(submission, RtiSubmissionStatus.Queued, "queued", "Queued for transmission.");
+            db.SubmissionEvents.Add(submission.TransitionTo(
+                RtiSubmissionStatus.Queued, "queued", "Queued for transmission.", tenant.UserId));
         }
 
         if (submission.Status != RtiSubmissionStatus.Queued)
@@ -236,8 +239,9 @@ public sealed class SubmissionService(
                 $"Submission has reached the maximum of {MaxAttempts} attempts and needs manual review.");
         }
 
-        Transition(submission, RtiSubmissionStatus.Transmitting, "transmitting",
-            $"Attempt {submission.Attempts + 1} of {MaxAttempts}.");
+        db.SubmissionEvents.Add(submission.TransitionTo(
+            RtiSubmissionStatus.Transmitting, "transmitting",
+            $"Attempt {submission.Attempts + 1} of {MaxAttempts}.", tenant.UserId));
         submission.Attempts += 1;
         await db.SaveChangesAsync(ct);
 
@@ -254,7 +258,8 @@ public sealed class SubmissionService(
             // attempt. Not the request's token: the caller may have gone away.
             submission.LastError = Truncate(ex.Message, 2000);
             submission.NextAttemptAt = DateTimeOffset.UtcNow.Add(BackoffFor(submission.Attempts));
-            Transition(submission, RtiSubmissionStatus.Failed, "failed", ex.Message);
+            db.SubmissionEvents.Add(submission.TransitionTo(
+                RtiSubmissionStatus.Failed, "failed", ex.Message, tenant.UserId));
             await db.SaveChangesAsync(CancellationToken.None);
             throw;
         }
@@ -268,7 +273,8 @@ public sealed class SubmissionService(
                 submission.SubmittedAt = DateTimeOffset.UtcNow;
                 submission.LastError = null;
                 submission.NextAttemptAt = null;
-                Transition(submission, RtiSubmissionStatus.Accepted, "accepted", result.Detail);
+                db.SubmissionEvents.Add(submission.TransitionTo(
+                    RtiSubmissionStatus.Accepted, "accepted", result.Detail, tenant.UserId));
                 break;
 
             case RtiSubmissionStatus.Rejected:
@@ -276,14 +282,23 @@ public sealed class SubmissionService(
                 // A business rejection will fail identically if replayed unchanged,
                 // so no automatic retry is scheduled.
                 submission.NextAttemptAt = null;
-                Transition(submission, RtiSubmissionStatus.Rejected, "rejected", result.Detail);
+                db.SubmissionEvents.Add(submission.TransitionTo(
+                    RtiSubmissionStatus.Rejected, "rejected", result.Detail, tenant.UserId));
+                break;
+
+            case RtiSubmissionStatus.Failed:
+                submission.LastError = result.Detail;
+                submission.NextAttemptAt = DateTimeOffset.UtcNow.Add(BackoffFor(submission.Attempts));
+                db.SubmissionEvents.Add(submission.TransitionTo(
+                    RtiSubmissionStatus.Failed, "failed", result.Detail, tenant.UserId));
                 break;
 
             default:
-                submission.LastError = result.Detail;
-                submission.NextAttemptAt = DateTimeOffset.UtcNow.Add(BackoffFor(submission.Attempts));
-                Transition(submission, RtiSubmissionStatus.Failed, "failed", result.Detail);
-                break;
+                // HmrcClient returned a status that makes no sense from HMRC (e.g.
+                // Draft, Queued). This is a programming error, not a network event,
+                // so raise rather than silently treating it as a failure.
+                throw new InvalidOperationException(
+                    $"HmrcClient returned unexpected status '{result.Status}' for submission {submission.Id}.");
         }
 
         await db.SaveChangesAsync(ct);
@@ -322,8 +337,9 @@ public sealed class SubmissionService(
                 $"Submission has reached the maximum of {MaxAttempts} attempts and needs manual review.");
         }
 
-        Transition(submission, RtiSubmissionStatus.Queued, "requeued",
-            $"Requeued after {submission.Status.ToString().ToLowerInvariant()}.");
+        db.SubmissionEvents.Add(submission.TransitionTo(
+            RtiSubmissionStatus.Queued, "requeued",
+            $"Requeued after {submission.Status.ToString().ToLowerInvariant()}.", tenant.UserId));
         submission.NextAttemptAt = null;
         await db.SaveChangesAsync(ct);
 
@@ -385,50 +401,16 @@ public sealed class SubmissionService(
     {
         if (validation.IsValid)
         {
-            Transition(submission, RtiSubmissionStatus.Validated, "validated",
-                "Local validation passed.");
+            db.SubmissionEvents.Add(submission.TransitionTo(
+                RtiSubmissionStatus.Validated, "validated", "Local validation passed.",
+                tenant.UserId));
             return;
         }
 
-        Transition(submission, RtiSubmissionStatus.Failed, "validation_failed",
-            string.Join(" ", validation.Errors));
-        submission.LastError = string.Join(" ", validation.Errors);
-    }
-
-    /// <summary>
-    /// The only place Status is assigned. Refuses illegal moves and appends the
-    /// audit event in the same step, so the two cannot drift apart.
-    /// </summary>
-    private void Transition(
-        RtiSubmission submission, RtiSubmissionStatus to, string eventType, string detail)
-    {
-        var from = submission.Status;
-
-        if (!RtiSubmissionStateMachine.CanTransition(from, to))
-        {
-            throw ApiException.Conflict(
-                $"Illegal transition {from} -> {to}. Allowed: {FormatNext(submission)}.");
-        }
-
-        submission.Status = to;
-        submission.UpdatedAt = DateTimeOffset.UtcNow;
-        Append(submission, eventType, detail, from, to);
-    }
-
-    private void Append(
-        RtiSubmission submission, string eventType, string detail,
-        RtiSubmissionStatus? from = null, RtiSubmissionStatus? to = null)
-    {
-        db.SubmissionEvents.Add(new RtiSubmissionEvent
-        {
-            SubmissionId = submission.Id,
-            TenantId = submission.TenantId,
-            EventType = eventType,
-            FromStatus = from,
-            ToStatus = to,
-            Detail = Truncate(detail, 2000),
-            ActorUserId = tenant.UserId == Guid.Empty ? null : tenant.UserId,
-        });
+        var errorMessage = string.Join(" ", validation.Errors);
+        db.SubmissionEvents.Add(submission.TransitionTo(
+            RtiSubmissionStatus.Failed, "validation_failed", errorMessage, tenant.UserId));
+        submission.LastError = errorMessage;
     }
 
     private static string FormatNext(RtiSubmission submission)

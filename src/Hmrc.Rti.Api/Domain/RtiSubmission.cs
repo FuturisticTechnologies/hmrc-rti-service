@@ -139,7 +139,13 @@ public sealed class RtiSubmission
     public Guid TenantId { get; set; }
 
     public RtiSubmissionType SubmissionType { get; set; }
-    public RtiSubmissionStatus Status { get; set; } = RtiSubmissionStatus.Draft;
+
+    /// <summary>
+    /// Assigned only by <see cref="TransitionTo"/>. The setter is private to
+    /// prevent any code path from bypassing the state machine; EF Core maps it
+    /// via the backing field declared in <c>RtiDbContext</c>.
+    /// </summary>
+    public RtiSubmissionStatus Status { get; private set; } = RtiSubmissionStatus.Draft;
 
     /// <summary>UK tax year the submission belongs to, e.g. 2026 for 2026/27.</summary>
     public int TaxYear { get; set; }
@@ -183,6 +189,25 @@ public sealed class RtiSubmission
     public DateTimeOffset? SubmittedAt { get; set; }
 
     public List<RtiSubmissionEvent> Events { get; set; } = [];
+
+    /// <summary>
+    /// Appends a free-form audit event that is not associated with a status
+    /// change, for example the initial "created" record. Use
+    /// <see cref="TransitionTo"/> for any change that moves the status.
+    /// </summary>
+    public RtiSubmissionEvent AppendEvent(string eventType, string detail, Guid? actorUserId = null)
+    {
+        var evt = new RtiSubmissionEvent
+        {
+            SubmissionId = Id,
+            TenantId = TenantId,
+            EventType = eventType,
+            Detail = detail.Length <= 2000 ? detail : detail[..2000],
+            ActorUserId = actorUserId == Guid.Empty ? null : actorUserId,
+        };
+        Events.Add(evt);
+        return evt;
+    }
 
     /// <summary>
     /// Moves the submission to a new status. Validates the move, assigns the

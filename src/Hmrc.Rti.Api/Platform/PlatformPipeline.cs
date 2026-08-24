@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 using System.Diagnostics;
 using System.Text.Json;
+using Hmrc.Rti.Api.Domain;
 
 namespace Payroll.Platform;
 
@@ -119,6 +120,15 @@ public static class PlatformPipelineExtensions
                 logger.LogWarning("request.rejected {RequestId} {Status} {Detail}",
                     requestId, ex.StatusCode, ex.Message);
                 await ProblemWriter.WriteAsync(ctx.Response, ex.StatusCode, ex.Message, ex.Errors);
+                return;
+            }
+            catch (IllegalTransitionException ex)
+            {
+                // Domain-layer protection: the caller asked for a move the state
+                // machine does not allow. Surface as 409 Conflict, the same code the
+                // service layer used to produce via ApiException.Conflict().
+                logger.LogWarning("request.rejected {RequestId} 409 {Detail}", requestId, ex.Message);
+                await ProblemWriter.WriteAsync(ctx.Response, StatusCodes.Status409Conflict, ex.Message);
                 return;
             }
             catch (BadHttpRequestException ex)
