@@ -111,10 +111,88 @@ public class SubmissionServiceTests
         TotalEmployerNi = 420.00m,
     };
 
+    [Fact]
+    public async Task A_validated_submission_accepted_by_hmrc_produces_an_accepted_event()
+    {
+        var hmrc = new StaticHmrc(new HmrcSubmissionResult(
+            RtiSubmissionStatus.Accepted, "HMRC-123", "Accepted by HMRC.", WasLive: false));
+        var created = await Service(hmrc).CreateEpsAsync(ValidEps(), default);
+
+        var transmitted = await Service(hmrc).TransmitAsync(created.Id, default);
+        Assert.Equal(nameof(RtiSubmissionStatus.Accepted), transmitted.Status);
+        Assert.Equal("HMRC-123", transmitted.HmrcSubmissionId);
+
+        var events = await Service(hmrc).GetEventsAsync(created.Id, default);
+        // created, validated, queued, transmitting, accepted
+        Assert.Equal(5, events.Count);
+        Assert.Equal("accepted", events.Last().EventType);
+        Assert.Equal(nameof(RtiSubmissionStatus.Transmitting), events.Last().FromStatus);
+        Assert.Equal(nameof(RtiSubmissionStatus.Accepted), events.Last().ToStatus);
+    }
+
+    [Fact]
+    public async Task An_accepted_submission_cannot_be_retried()
+    {
+        var hmrc = new StaticHmrc(new HmrcSubmissionResult(
+            RtiSubmissionStatus.Accepted, "HMRC-123", "Accepted.", WasLive: false));
+        var created = await Service(hmrc).CreateEpsAsync(ValidEps(), default);
+        await Service(hmrc).TransmitAsync(created.Id, default);
+
+        var error = await Assert.ThrowsAsync<ApiException>(
+            () => Service(hmrc).RetryAsync(created.Id, default));
+        Assert.Equal(409, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task An_unexpected_hmrc_result_status_raises_rather_than_silently_failing()
+    {
+        // HmrcClient must only return Accepted, Rejected or Failed. Any other
+        // value (Draft, Queued, Transmitting) is a programming error and must
+        // raise rather than be silently recorded as a failure.
+        var bogus = new HmrcSubmissionResult(
+            RtiSubmissionStatus.Draft, null, "Should never come back from HMRC.", WasLive: false);
+        var hmrc = new StaticHmrc(bogus);
+        var created = await Service(hmrc).CreateEpsAsync(ValidEps(), default);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Service(hmrc).TransmitAsync(created.Id, default));
+    }
+
+    [Fact]
+    public async Task Every_status_change_records_a_matching_event_with_from_and_to()
+    {
+        var hmrc = new StaticHmrc(new HmrcSubmissionResult(
+            RtiSubmissionStatus.Rejected, null, "Business error.", WasLive: false));
+        var created = await Service(hmrc).CreateEpsAsync(ValidEps(), default);
+        await Service(hmrc).TransmitAsync(created.Id, default);
+
+        var events = await Service(hmrc).GetEventsAsync(created.Id, default);
+        var transitions = events.Where(e => e.FromStatus is not null).ToList();
+
+        // validated, queued, transmitting, rejected
+        Assert.Equal(4, transitions.Count);
+        Assert.All(transitions, e =>
+        {
+            Assert.NotNull(e.FromStatus);
+            Assert.NotNull(e.ToStatus);
+            Assert.NotEqual(e.FromStatus, e.ToStatus);
+        });
+
+        var last = transitions.Last();
+        Assert.Equal(nameof(RtiSubmissionStatus.Transmitting), last.FromStatus);
+        Assert.Equal(nameof(RtiSubmissionStatus.Rejected), last.ToStatus);
+    }
+
     private sealed class ThrowingHmrc(Exception error) : IHmrcClient
     {
         public Task<HmrcSubmissionResult> SubmitAsync(RtiSubmission submission, CancellationToken ct) =>
             Task.FromException<HmrcSubmissionResult>(error);
+    }
+
+    private sealed class StaticHmrc(HmrcSubmissionResult result) : IHmrcClient
+    {
+        public Task<HmrcSubmissionResult> SubmitAsync(RtiSubmission submission, CancellationToken ct) =>
+            Task.FromResult(result);
     }
 
     private sealed class NoPayrollApi : IPayrollApiClient

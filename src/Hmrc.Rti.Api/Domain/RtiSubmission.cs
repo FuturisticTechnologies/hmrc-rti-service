@@ -137,7 +137,13 @@ public sealed class RtiSubmission
     public Guid TenantId { get; set; }
 
     public RtiSubmissionType SubmissionType { get; set; }
-    public RtiSubmissionStatus Status { get; set; } = RtiSubmissionStatus.Draft;
+
+    /// <summary>
+    /// Assigned only by <see cref="TransitionTo"/>. The setter is private to
+    /// prevent any code path from bypassing the state machine; EF Core maps it
+    /// via its built-in private-setter support.
+    /// </summary>
+    public RtiSubmissionStatus Status { get; private set; } = RtiSubmissionStatus.Draft;
 
     /// <summary>UK tax year the submission belongs to, e.g. 2026 for 2026/27.</summary>
     public int TaxYear { get; set; }
