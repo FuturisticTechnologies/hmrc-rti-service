@@ -26,6 +26,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The retry cadence is internal on purpose: it is an implementation
+         detail of SubmissionService, not part of the service's surface. It
+         still needs direct test coverage, because HMRC rate-limits and a wrong
+         backoff curve is only visible in production. -->
+    <InternalsVisibleTo Include="Hmrc.Rti.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- SQL migrations ship with the app and are applied on boot, mirroring the
          Python service's `alembic upgrade head` container command. -->
     <Content Include="..\..\migrations\*.sql">
