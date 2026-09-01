@@ -404,8 +404,14 @@ public sealed class SubmissionService(
     }
 
     /// <summary>Exponential backoff, capped: 1, 2, 4, 8, 16 minutes.</summary>
+    /// <remarks>
+    /// The attempt is clamped before the subtraction, not after. Clamping
+    /// <c>attempt - 1</c> overflows for a sufficiently negative attempt, which
+    /// wraps to int.MaxValue and yields the longest delay instead of the
+    /// shortest - the opposite of what a defensive floor is for.
+    /// </remarks>
     internal static TimeSpan BackoffFor(int attempt) =>
-        TimeSpan.FromMinutes(Math.Pow(2, Math.Clamp(attempt - 1, 0, 4)));
+        TimeSpan.FromMinutes(Math.Pow(2, Math.Clamp(attempt, 1, MaxAttempts) - 1));
 
     private static string Truncate(string value, int max) =>
         value.Length <= max ? value : value[..max];
