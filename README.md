@@ -115,7 +115,7 @@ src/Hmrc.Rti.Api/
   Application/    envelope builder + validation, submission orchestration
   Endpoints/      minimal-API route definitions
 migrations/       ordered SQL, applied on boot
-tests/            36 unit tests, no database required
+tests/            89 unit tests, no database required
 ```
 
 The `Platform/` folder is byte-identical to the one in `integration-hub`,
