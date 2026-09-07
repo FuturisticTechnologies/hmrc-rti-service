@@ -1,0 +1,160 @@
+name: deploy
+
+# Builds the service, pushes it to the environment's registry, and moves the
+# container app onto the new revision.
+#
+# The app runs in Multiple revision mode, so a new revision starts on 0% of
+# traffic and stays there until something shifts it. That is the blue/green
+# behaviour the M5-18 runbook describes: deploy, check, then cut over. Set
+# cutover=false to leave the revision in place and shift it by hand later.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment
+        required: true
+        default: dev
+        type: choice
+        options: [dev, staging, prod]
+      cutover:
+        description: Send live traffic to the new revision
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # Two deployments into one environment would race on the traffic split.
+  group: deploy-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+
+    env:
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      PREFIX: ftpay
+      APP_SUFFIX: -hmrc-rti
+      IMAGE_REPO: hmrc-rti-service
+      AZURE_EXTENSION_USE_DYNAMIC_INSTALL: yes_without_prompt
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Names come from the resource group rather than being assumed. The
+      # registry carries a hash suffix that only Terraform knows.
+      - name: Resolve the environment
+        id: env
+        run: |
+          set -euo pipefail
+          RG="rg-${PREFIX}-${ENVIRONMENT}"
+          if ! az group show -n "$RG" -o none 2>/dev/null; then
+            echo "::error::Resource group $RG does not exist. Deploy the infrastructure first:"
+            echo "platform-infra > Actions > infrastructure > Run workflow > $ENVIRONMENT"
+            exit 1
+          fi
+          ACR=$(az acr list -g "$RG" --query "[0].loginServer" -o tsv)
+          APP=$(az containerapp list -g "$RG" --query "[?ends_with(name, '${APP_SUFFIX}')].name | [0]" -o tsv)
+          if [ -z "$ACR" ] || [ -z "$APP" ]; then
+            echo "::error::Registry or container app not found in $RG (acr='$ACR' app='$APP')."
+            exit 1
+          fi
+          echo "rg=$RG"   >> "$GITHUB_OUTPUT"
+          echo "acr=$ACR" >> "$GITHUB_OUTPUT"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "Resource group : $RG"
+          echo "Registry       : $ACR"
+          echo "Container app  : $APP"
+
+      # ACR build rather than docker build + push: the image is built next to
+      # the registry, so a slow runner uplink does not become a deploy time.
+      - name: Build and push the image
+        run: |
+          az acr build \
+            --registry "$(echo '${{ steps.env.outputs.acr }}' | cut -d. -f1)" \
+            --image "${IMAGE_REPO}:${{ steps.env.outputs.tag }}" \
+            --image "${IMAGE_REPO}:${ENVIRONMENT}-latest" \
+            --file Dockerfile .
+
+      - name: Create the new revision
+        id: revision
+        run: |
+          set -euo pipefail
+          az containerapp update \
+            -g "${{ steps.env.outputs.rg }}" \
+            -n "${{ steps.env.outputs.app }}" \
+            --image "${{ steps.env.outputs.acr }}/${IMAGE_REPO}:${{ steps.env.outputs.tag }}" \
+            --output none
+          REV=$(az containerapp revision list \
+            -g "${{ steps.env.outputs.rg }}" -n "${{ steps.env.outputs.app }}" \
+            --query "sort_by([], &properties.createdTime)[-1].name" -o tsv)
+          echo "name=$REV" >> "$GITHUB_OUTPUT"
+          echo "New revision: $REV"
+
+      - name: Wait for it to report healthy
+        run: |
+          set -euo pipefail
+          REV="${{ steps.revision.outputs.name }}"
+          for ATTEMPT in $(seq 1 30); do
+            STATE=$(az containerapp revision show \
+              -g "${{ steps.env.outputs.rg }}" -n "${{ steps.env.outputs.app }}" \
+              --revision "$REV" --query "properties.healthState" -o tsv)
+            RUNNING=$(az containerapp revision show \
+              -g "${{ steps.env.outputs.rg }}" -n "${{ steps.env.outputs.app }}" \
+              --revision "$REV" --query "properties.runningState" -o tsv)
+            echo "  attempt $ATTEMPT: running=$RUNNING health=$STATE"
+            if [ "$RUNNING" = "Running" ] && [ "$STATE" = "Healthy" ]; then
+              echo "Revision is healthy."
+              exit 0
+            fi
+            if [ "$RUNNING" = "Failed" ]; then
+              echo "::error::Revision $REV failed to start. Traffic has not moved."
+              az containerapp logs show -g "${{ steps.env.outputs.rg }}" \
+                -n "${{ steps.env.outputs.app }}" --revision "$REV" --tail 50 || true
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::error::Revision $REV did not become healthy in five minutes. Traffic has not moved."
+          exit 1
+
+      # Only now does anything real point at the new build.
+      - name: Cut traffic over
+        if: inputs.cutover != false
+        run: |
+          az containerapp ingress traffic set \
+            -g "${{ steps.env.outputs.rg }}" \
+            -n "${{ steps.env.outputs.app }}" \
+            --revision-weight "${{ steps.revision.outputs.name }}=100" \
+            --output none
+          echo "100% of traffic now on ${{ steps.revision.outputs.name }}."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${IMAGE_REPO} → ${ENVIRONMENT}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${IMAGE_REPO}:${{ steps.env.outputs.tag }}\` |"
+            echo "| Revision | \`${{ steps.revision.outputs.name }}\` |"
+            echo "| Traffic | ${{ inputs.cutover != false && '100% cut over' || 'left at 0% - shift by hand' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
