@@ -115,8 +115,20 @@ src/Hmrc.Rti.Api/
   Application/    envelope builder + validation, submission orchestration
   Endpoints/      minimal-API route definitions
 migrations/       ordered SQL, applied on boot
-tests/            89 unit tests, no database required
+tests/            104 unit tests, no database required
 ```
+
+The test count above is collected cases, not test methods — `[Theory]` rows
+count individually, which is what the runner reports. Reproduce it with:
+
+```bash
+dotnet test tests/Hmrc.Rti.Tests --list-tests
+```
+
+Quote that number rather than a remembered one. This figure was documented as
+36, then 89, and was wrong both times within a sprint of being written — not
+because anyone estimated, but because later tickets added tests and nobody came
+back to the README.
 
 The `Platform/` folder is byte-identical to the one in `integration-hub`,
 deliberately: two self-contained services that can be built and deployed
