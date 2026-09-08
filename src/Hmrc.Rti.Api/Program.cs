@@ -70,7 +70,40 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.DictionaryKeyPolicy = JsonNamingPolicy.SnakeCaseLower;
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
-builder.Services.AddOpenApi();
+
+// The document's identity and the Swagger UI that renders it. See
+// Platform/PlatformOpenApi.cs - the generator stays Microsoft.AspNetCore.OpenApi.
+var apiInfo = new PlatformOpenApiInfo
+{
+    Title = "HMRC RTI Service",
+    Version = ServiceInfo.Version,
+    Description =
+        """
+        Real Time Information filing for the PayrollFuturistic platform: builds,
+        validates, transmits and reconciles Full Payment Submissions (FPS) and
+        Employer Payment Summaries (EPS) against HMRC.
+
+        **Authentication.** This service issues no tokens of its own. Present the
+        access token from the payroll API's `POST /api/v1/auth/login`; it is
+        validated here with the same shared secret.
+
+        **Tenancy.** The tenant is taken from the token's `tenant_id` claim,
+        overridable with an `X-Tenant-ID` header, and enforced by Postgres
+        row-level security.
+
+        **Idempotency.** Send an `Idempotency-Key` header on the create
+        operations. The same key with the same body replays the original
+        response; the same key with a different body is rejected with 409, so a
+        retried request cannot file a duplicate FPS with HMRC.
+        """,
+    TagDescriptions = new Dictionary<string, string>
+    {
+        ["rti"] = "Build, transmit and reconcile RTI submissions.",
+        ["system"] = "Liveness, readiness and service posture. No authentication required.",
+    },
+};
+
+builder.Services.AddPlatformOpenApi(apiInfo);
 
 var app = builder.Build();
 
@@ -105,7 +138,7 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-app.MapOpenApi("/openapi.json");
+app.UsePlatformOpenApi(apiInfo);
 app.MapSystemEndpoints();
 app.MapRtiEndpoints();
 
@@ -113,7 +146,8 @@ app.MapGet("/", () => Results.Ok(new
 {
     name = ServiceInfo.Name,
     version = ServiceInfo.Version,
-    openapi = "/openapi.json",
+    openapi = PlatformOpenApi.DocumentPath,
+    docs = PlatformOpenApi.UiPath,
     health = "/api/v1/health",
 })).AllowAnonymous().ExcludeFromDescription();
 
