@@ -83,15 +83,22 @@ jobs:
           echo "Registry       : $ACR"
           echo "Container app  : $APP"
 
-      # ACR build rather than docker build + push: the image is built next to
-      # the registry, so a slow runner uplink does not become a deploy time.
+      # docker build on the runner, not az acr build. ACR Tasks is not permitted
+      # on this subscription - a server-side build returns TasksOperationsNotAllowed,
+      # and no amount of registry permission changes that. The cost is pushing the
+      # image back over the runner's uplink, which is the cheaper half of the trade.
       - name: Build and push the image
         run: |
-          az acr build \
-            --registry "$(echo '${{ steps.env.outputs.acr }}' | cut -d. -f1)" \
-            --image "${IMAGE_REPO}:${{ steps.env.outputs.tag }}" \
-            --image "${IMAGE_REPO}:${ENVIRONMENT}-latest" \
-            --file Dockerfile .
+          set -euo pipefail
+          REGISTRY="${{ steps.env.outputs.acr }}"
+          az acr login --name "$(echo "$REGISTRY" | cut -d. -f1)"
+          docker build \
+            --file Dockerfile \
+            --tag "$REGISTRY/${IMAGE_REPO}:${{ steps.env.outputs.tag }}" \
+            --tag "$REGISTRY/${IMAGE_REPO}:${ENVIRONMENT}-latest" \
+            .
+          docker push "$REGISTRY/${IMAGE_REPO}:${{ steps.env.outputs.tag }}"
+          docker push "$REGISTRY/${IMAGE_REPO}:${ENVIRONMENT}-latest"
 
       - name: Create the new revision
         id: revision
