@@ -131,7 +131,7 @@ jobs:
             # which this one is - it runs a dispatcher and must not scale to
             # zero. Accepting only "Running" left it timing out while reporting
             # Healthy on every attempt.
-            if { [ "$RUNNING" = "Running" ] || [ "$RUNNING" = "RunningAtMaxScale" ]; } \n               && [ "$STATE" = "Healthy" ]; then
+            if { [ "$RUNNING" = "Running" ] || [ "$RUNNING" = "RunningAtMaxScale" ]; } && [ "$STATE" = "Healthy" ]; then
               echo "Revision is healthy."
               exit 0
             fi
