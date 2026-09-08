@@ -109,9 +109,21 @@ jobs:
             -n "${{ steps.env.outputs.app }}" \
             --image "${{ steps.env.outputs.acr }}/${IMAGE_REPO}:${{ steps.env.outputs.tag }}" \
             --output none
-          REV=$(az containerapp revision list \
+          # latestRevisionName from the app, not the newest entry in the
+          # revision list. The list endpoint returns only *active*
+          # revisions, so it comes back empty whenever none are - which is
+          # precisely the state a recovery deploy runs in. REV was then
+          # empty, the wait step polled a revision that does not exist for
+          # five minutes, and the run died with "Revision  did not become
+          # healthy" - a blank where the name should be, and no hint that
+          # the lookup was what failed.
+          REV=$(az containerapp show \
             -g "${{ steps.env.outputs.rg }}" -n "${{ steps.env.outputs.app }}" \
-            --query "sort_by([], &properties.createdTime)[-1].name" -o tsv)
+            --query "properties.latestRevisionName" -o tsv)
+          if [ -z "$REV" ]; then
+            echo "::error::Could not determine the revision just created."
+            exit 1
+          fi
           echo "name=$REV" >> "$GITHUB_OUTPUT"
           echo "New revision: $REV"
 
