@@ -169,6 +169,53 @@ jobs:
             --output none
           echo "100% of traffic now on ${{ steps.revision.outputs.name }}."
 
+      # A revision can hold 100% of traffic and still be unroutable. When this
+      # service was switched from internal to external ingress, that created a
+      # revision out of band and left traffic pinned to one provisioned under
+      # the old configuration: the revision reported Running and Healthy, the
+      # traffic split read 100%, and the public URL answered 404 to every
+      # request including /api/v1/health. Every check above was green.
+      #
+      # So check the thing that actually matters - that the endpoint serves.
+      - name: Verify the endpoint serves
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.cutover }}
+        run: |
+          set -euo pipefail
+          RG="${{ steps.env.outputs.rg }}"
+          APP="${{ steps.env.outputs.app }}"
+
+          # One field per call. `az ... -o tsv` on a two-element array prints
+          # the elements on separate lines rather than tab-separated, so a
+          # single `read` takes the first and leaves the second empty - which
+          # passes the external check and then probes https:///api/v1/health.
+          EXTERNAL=$(az containerapp show -g "$RG" -n "$APP" \
+            --query "properties.configuration.ingress.external" -o tsv | tr -d '\r')
+          FQDN=$(az containerapp show -g "$RG" -n "$APP" \
+            --query "properties.configuration.ingress.fqdn" -o tsv | tr -d '\r')
+
+          # Internal ingress is not resolvable from the runner, so there is
+          # nothing to probe from here. Not a failure - it is the intended
+          # posture in any environment that has not opted into public ingress.
+          if [ "$EXTERNAL" != "true" ]; then
+            echo "Ingress is internal; skipping the reachability check."
+            exit 0
+          fi
+
+          for ATTEMPT in $(seq 1 12); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+              "https://${FQDN}/api/v1/health" || echo 000)
+            echo "  attempt $ATTEMPT: GET https://${FQDN}/api/v1/health -> $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Endpoint is serving."
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "::error::https://${FQDN}/api/v1/health did not answer 200 after cutover."
+          echo "Traffic is on ${{ steps.revision.outputs.name }}, but the endpoint is not serving."
+          exit 1
+
       - name: Summary
         if: always()
         run: |
