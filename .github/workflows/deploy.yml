@@ -131,7 +131,7 @@ jobs:
               echo "Revision is healthy."
               exit 0
             fi
-            if [ "$RUNNING" = "Failed" ]; then
+            if [ "$RUNNING" = "Failed" ] || [ "$RUNNING" = "ActivationFailed" ]; then
               echo "::error::Revision $REV failed to start. Traffic has not moved."
               az containerapp logs show -g "${{ steps.env.outputs.rg }}" \
                 -n "${{ steps.env.outputs.app }}" --revision "$REV" --tail 50 || true
@@ -144,7 +144,7 @@ jobs:
 
       # Only now does anything real point at the new build.
       - name: Cut traffic over
-        if: inputs.cutover != false
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.cutover }}
         run: |
           az containerapp ingress traffic set \
             -g "${{ steps.env.outputs.rg }}" \
@@ -163,5 +163,5 @@ jobs:
             echo "|---|---|"
             echo "| Image | \`${IMAGE_REPO}:${{ steps.env.outputs.tag }}\` |"
             echo "| Revision | \`${{ steps.revision.outputs.name }}\` |"
-            echo "| Traffic | ${{ inputs.cutover != false && '100% cut over' || 'left at 0% - shift by hand' }} |"
+            echo "| Traffic | ${{ (github.event_name != 'workflow_dispatch' || inputs.cutover) && '100% cut over' || 'left at 0% - shift by hand' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
