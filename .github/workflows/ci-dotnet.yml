@@ -58,8 +58,10 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # One project per restore (two fail with MSB1008). The test project
+      # references the API, so restoring it restores both.
       - name: Restore
-        run: dotnet restore src/Hmrc.Rti.Api/Hmrc.Rti.Api.csproj tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj
+        run: dotnet restore tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj
 
       - name: Build
         run: dotnet build tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj --configuration Release --no-restore

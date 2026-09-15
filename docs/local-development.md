@@ -40,13 +40,17 @@ docker compose -f docker-compose.platform.yml up
 
 # Or, against a Postgres you already have running:
 export DATABASE_URL="postgresql://payroll:payroll_dev_pwd@localhost:5432/payroll"
-dotnet run --project src/Hmrc.Rti.Api
+dotnet run --project src/Hmrc.Rti.Api      # http://localhost:8081, Development (launch profile)
 ```
 
 `DATABASE_URL` accepts either a native Npgsql connection string or the
 SQLAlchemy-style URL the Python service uses, including the `+asyncpg` and
 `+psycopg2` driver suffixes. One `DATABASE_URL` works for the whole platform,
 which is the point.
+
+`ConnectionStrings__Postgres`, when set, takes precedence over `DATABASE_URL`
+(it is what Azure sets); with neither, the service uses
+`localhost:5432/payroll`.
 
 ## 4. Ports
 
