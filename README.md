@@ -182,25 +182,18 @@ schema and logs `migrations.applied 0001_rti_schema`.
 ### 5. Run the service
 
 **With `dotnet run`** — listens on http://localhost:8081, the port the platform
-uses for this service.
+uses for this service, as `Development`. Both come from the `http` profile in
+`src/Hmrc.Rti.Api/Properties/launchSettings.json`, so no variables are needed
+(PowerShell or Git Bash):
 
-PowerShell:
-
-```powershell
-$env:ASPNETCORE_ENVIRONMENT = "Development"
-$env:ASPNETCORE_URLS = "http://localhost:8081"
+```bash
 dotnet run --project src/Hmrc.Rti.Api
 ```
 
-Git Bash:
-
-```bash
-ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS=http://localhost:8081 dotnet run --project src/Hmrc.Rti.Api
-```
-
-Set both variables. The repository has no `launchSettings.json`, so without
-them the service listens on http://localhost:5000 and runs as `Production`.
-`Ctrl+C` stops it.
+To listen elsewhere, pass `--urls` after `--`, which overrides the profile:
+`dotnet run --project src/Hmrc.Rti.Api -- --urls http://localhost:9081`.
+The profile is only read by `dotnet run` and IDEs; it is not published, so the
+Docker image and Azure never see it. `Ctrl+C` stops it.
 
 **With Docker** — builds the repository's `Dockerfile`. The container listens on
 8080, published here as 8081. There is no compose file in this repository.
@@ -317,7 +310,7 @@ dotnet test tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj --configuration Release -
 | Start-up fails with `PlatformAuth:SecretKey must be set and at least 32 characters` | The secret is empty or shorter than 32 characters |
 | Start-up fails with `Npgsql.NpgsqlException: Failed to connect to 127.0.0.1:5432` | Postgres is not running, or not at that host and port. Migrations run before the service starts listening, so nothing answers on 8081 at all. If Postgres goes away later, `/api/v1/health/ready` returns `503 {"detail":"Database is not reachable"}` while `/api/v1/health` stays `200` |
 | A `DATABASE_URL` you set has no effect | `ConnectionStrings:Postgres` is also set — in the environment or `appsettings.Development.json` — and takes precedence (step 3). Remove it, or put the URL there instead |
-| `Failed to bind to address http://127.0.0.1:8081: address already in use`, or the service is on `http://localhost:5000` and `/api/v1/meta` says `production` | Another process holds the port: choose another `ASPNETCORE_URLS`. Port 5000 and `production` mean `ASPNETCORE_URLS` and `ASPNETCORE_ENVIRONMENT` were not set. If a native Postgres already has 5432, publish the container as `-p 5433:5432` and put `Port=5433` in `ConnectionStrings__Postgres` |
+| `Failed to bind to address http://127.0.0.1:8081: address already in use`, or the service is on `http://localhost:5000` and `/api/v1/meta` says `production` | Another process holds the port: choose another with `-- --urls` (step 5). Port 5000 and `production` mean the launch profile was not used (`--no-launch-profile`, or the built DLL was started directly); run `dotnet run --project src/Hmrc.Rti.Api`. If a native Postgres already has 5432, publish the container as `-p 5433:5432` and put `Port=5433` in `ConnectionStrings__Postgres` |
 | `POST /api/v1/rti/fps` returns `502 The payroll API is unreachable.`, `401 The payroll API rejected the forwarded credentials.` or `404 Pay run … was not found.` | 502: `PayrollApi:BaseUrl` is wrong or the payroll API is down (from a container it must be `host.docker.internal`, not `localhost`). 401: the token was not issued by that payroll API, or its user is not in that API's database. 404: no such pay run for the token's tenant |
 
 Background on the .NET 10 requirement, HMRC gating and what the unit tests do

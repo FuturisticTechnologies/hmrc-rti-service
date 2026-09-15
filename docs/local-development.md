@@ -40,7 +40,7 @@ docker compose -f docker-compose.platform.yml up
 
 # Or, against a Postgres you already have running:
 export DATABASE_URL="postgresql://payroll:payroll_dev_pwd@localhost:5432/payroll"
-dotnet run --project src/Hmrc.Rti.Api
+dotnet run --project src/Hmrc.Rti.Api      # http://localhost:8081, Development (launch profile)
 ```
 
 `DATABASE_URL` accepts either a native Npgsql connection string or the
