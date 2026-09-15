@@ -117,12 +117,12 @@ git clone https://github.com/FuturisticTechnologies/national-insurance.git
 
 ### 3. Configure
 
-The committed `src/Hmrc.Rti.Api/appsettings.json` already holds working local
-defaults, so a first run needs no configuration at all:
+The committed `src/Hmrc.Rti.Api/appsettings.json` and `Program.cs` already hold
+working local defaults, so a first run needs no configuration at all:
 
 | Setting | Local default | Why it works |
 |---|---|---|
-| `ConnectionStrings:Postgres` | `Host=localhost;Port=5432;Database=payroll;Username=payroll;Password=payroll_dev_pwd` | Matches the Postgres in step 4 |
+| Database | `Host=localhost;Port=5432;Database=payroll;Username=payroll;Password=payroll_dev_pwd` (built into `Program.cs`, used when neither `ConnectionStrings:Postgres` nor `DATABASE_URL` is set) | Matches the Postgres in step 4 |
 | `PlatformAuth:SecretKey` | `change-me-in-production-this-must-be-at-least-32-chars` | Equals the payroll API's default `APP_SECRET_KEY` |
 | `PayrollApi:BaseUrl` | `http://localhost:8000` | Where the payroll API listens locally |
 | `Hmrc:ClientId` / `Hmrc:ClientSecret` | empty | Empty means HMRC is **simulated**: a transmit returns a simulated acceptance (`SIM-…`) and says so in the log and the audit trail |
@@ -138,11 +138,12 @@ Easy to get wrong:
 
 - `PlatformAuth:SecretKey` must be **exactly** the payroll API's
   `APP_SECRET_KEY`, and at least 32 characters. Change one, change both.
-- Use `ConnectionStrings__Postgres`, not `DATABASE_URL`. `DATABASE_URL` is only
-  read when no `ConnectionStrings:Postgres` exists, and `appsettings.json`
-  always sets one, so `DATABASE_URL` is silently ignored.
-  `ConnectionStrings__Postgres` itself accepts a `postgresql://` URL, including
-  the `postgresql+asyncpg://` form the payroll API uses.
+- The database is taken from `ConnectionStrings__Postgres` if anything sets it
+  (environment, `appsettings.Development.json`, command line), otherwise from
+  `DATABASE_URL`, otherwise the local default above. Either variable accepts a
+  native connection string or a `postgresql://` URL, including the
+  `postgresql+asyncpg://` form the payroll API uses. Set both and
+  `ConnectionStrings__Postgres` wins — it is what Azure sets.
 - `dotnet run` does not read `.env` files. `.env.example` is only a list of the
   same keys.
 - Leave `Hmrc__AllowLiveSubmission` at `false` locally — see
@@ -315,7 +316,7 @@ dotnet test tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj --configuration Release -
 | Every secured call returns `401 {"detail":"Authentication required"}`, although login worked | The token was not signed with this service's `PlatformAuth:SecretKey`; it must equal the payroll API's `APP_SECRET_KEY`. Also check the token's age — access tokens expire after 30 minutes (the payroll API's `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`), so log in again — and that you sent `access_token`, not `refresh_token`, which is refused here |
 | Start-up fails with `PlatformAuth:SecretKey must be set and at least 32 characters` | The secret is empty or shorter than 32 characters |
 | Start-up fails with `Npgsql.NpgsqlException: Failed to connect to 127.0.0.1:5432` | Postgres is not running, or not at that host and port. Migrations run before the service starts listening, so nothing answers on 8081 at all. If Postgres goes away later, `/api/v1/health/ready` returns `503 {"detail":"Database is not reachable"}` while `/api/v1/health` stays `200` |
-| A `DATABASE_URL` you set has no effect | Expected — see step 3. Set `ConnectionStrings__Postgres` instead; a `postgresql://` URL is accepted there |
+| A `DATABASE_URL` you set has no effect | `ConnectionStrings:Postgres` is also set — in the environment or `appsettings.Development.json` — and takes precedence (step 3). Remove it, or put the URL there instead |
 | `Failed to bind to address http://127.0.0.1:8081: address already in use`, or the service is on `http://localhost:5000` and `/api/v1/meta` says `production` | Another process holds the port: choose another `ASPNETCORE_URLS`. Port 5000 and `production` mean `ASPNETCORE_URLS` and `ASPNETCORE_ENVIRONMENT` were not set. If a native Postgres already has 5432, publish the container as `-p 5433:5432` and put `Port=5433` in `ConnectionStrings__Postgres` |
 | `POST /api/v1/rti/fps` returns `502 The payroll API is unreachable.`, `401 The payroll API rejected the forwarded credentials.` or `404 Pay run … was not found.` | 502: `PayrollApi:BaseUrl` is wrong or the payroll API is down (from a container it must be `host.docker.internal`, not `localhost`). 401: the token was not issued by that payroll API, or its user is not in that API's database. 404: no such pay run for the token's tenant |
 
@@ -328,7 +329,8 @@ Environment variables use the .NET double-underscore convention.
 
 | Key | Default | Notes |
 |---|---|---|
-| `ConnectionStrings__Postgres` | localhost | Also accepts a `postgresql://` URL, including SQLAlchemy `+asyncpg` forms |
+| `ConnectionStrings__Postgres` | unset | Also accepts a `postgresql://` URL, including SQLAlchemy `+asyncpg` forms. Wins over `DATABASE_URL`; Azure sets this one |
+| `DATABASE_URL` | unset | Read when `ConnectionStrings__Postgres` is not set; same formats. With neither, the service uses localhost:5432, database `payroll` |
 | `PlatformAuth__SecretKey` | `change-me-in-production-this-must-be-at-least-32-chars` (local only) | **Must equal the payroll API's `APP_SECRET_KEY`**; at least 32 characters |
 | `PayrollApi__BaseUrl` | `http://localhost:8000` | |
 | `Hmrc__BaseUrl` | HMRC sandbox | |

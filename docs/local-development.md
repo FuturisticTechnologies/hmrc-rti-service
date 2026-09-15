@@ -48,6 +48,10 @@ SQLAlchemy-style URL the Python service uses, including the `+asyncpg` and
 `+psycopg2` driver suffixes. One `DATABASE_URL` works for the whole platform,
 which is the point.
 
+`ConnectionStrings__Postgres`, when set, takes precedence over `DATABASE_URL`
+(it is what Azure sets); with neither, the service uses
+`localhost:5432/payroll`.
+
 ## 4. Ports
 
 | Service | Port |

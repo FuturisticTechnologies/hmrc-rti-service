@@ -167,14 +167,26 @@ await app.RunAsync();
 /// Accepts either a native Npgsql connection string or the SQLAlchemy-style URL
 /// the rest of the platform uses in .env, so one DATABASE_URL can be shared.
 /// </summary>
+/// <remarks>
+/// First match wins: <c>ConnectionStrings:Postgres</c> from any source that sets
+/// it (the environment, as Azure does, appsettings.{Environment}.json, the
+/// command line), then <c>DATABASE_URL</c>, then <see cref="LocalDefault"/>. The
+/// local default lives here rather than in appsettings.json: a value there would
+/// always be present and DATABASE_URL would never be read.
+/// </remarks>
 internal static class PostgresConnectionString
 {
+    /// <summary>The Postgres the local setup starts: localhost:5432, database payroll.</summary>
+    public const string LocalDefault =
+        "Host=localhost;Port=5432;Database=payroll;Username=payroll;Password=payroll_dev_pwd";
+
     public static string Resolve(IConfiguration configuration)
     {
+        var databaseUrl = configuration["DATABASE_URL"];
+
         var raw = configuration.GetConnectionString("Postgres")
-                  ?? configuration["DATABASE_URL"]
-                  ?? throw new InvalidOperationException(
-                      "No database connection configured. Set ConnectionStrings:Postgres or DATABASE_URL.");
+                  ?? (string.IsNullOrWhiteSpace(databaseUrl) ? null : databaseUrl)
+                  ?? LocalDefault;
 
         return FromUrl(raw);
     }
