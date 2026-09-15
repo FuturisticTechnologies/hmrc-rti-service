@@ -45,6 +45,26 @@ public class SubmissionServiceTests
         Assert.Equal(nameof(RtiSubmissionStatus.Queued), retried.Status);
     }
 
+    [Fact]
+    public async Task A_submission_that_failed_local_validation_cannot_be_requeued()
+    {
+        // Kept as Failed for the audit trail, with the payload that failed.
+        // Retry used to move it to Queued, and transmit would then have sent
+        // that payload to HMRC without anything checking it again.
+        var hmrc = new ThrowingHmrc(new InvalidOperationException("HMRC must not be called."));
+        var invalid = ValidEps() with { EmployerPayeReference = "not-a-reference" };
+
+        await Assert.ThrowsAsync<ApiException>(() => Service(hmrc).CreateEpsAsync(invalid, default));
+        var stored = Assert.Single(await Service(hmrc).ListAsync(null, null, null, default));
+        Assert.Equal(nameof(RtiSubmissionStatus.Failed), stored.Status);
+
+        var error = await Assert.ThrowsAsync<ApiException>(() => Service(hmrc).RetryAsync(stored.Id, default));
+        Assert.Equal(409, error.StatusCode);
+
+        var after = await Service(hmrc).GetAsync(stored.Id, default);
+        Assert.Equal(nameof(RtiSubmissionStatus.Failed), after.Status);
+    }
+
     private SubmissionService Service(IHmrcClient hmrc) =>
         new(new RtiDbContext(_options, _tenant), new NoPayrollApi(), hmrc, _tenant,
             NullLogger<SubmissionService>.Instance);

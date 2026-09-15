@@ -299,6 +299,19 @@ public sealed class SubmissionService(
                 $"A submission in status '{submission.Status}' cannot be retried.");
         }
 
+        // Retry is for a transmission that went wrong. A submission that never
+        // passed local validation still holds the payload that failed it, and
+        // re-queueing would send that to HMRC with nothing checking it again.
+        var validated = await db.SubmissionEvents.AnyAsync(
+            e => e.SubmissionId == id && e.ToStatus == RtiSubmissionStatus.Validated, ct);
+
+        if (!validated)
+        {
+            throw ApiException.Conflict(
+                "This submission failed local validation, so retrying it would transmit the same " +
+                "invalid payload. Correct the source data and create a new submission.");
+        }
+
         if (submission.Attempts >= MaxAttempts)
         {
             throw ApiException.Conflict(
