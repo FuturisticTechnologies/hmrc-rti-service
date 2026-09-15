@@ -33,8 +33,11 @@ USER app
 EXPOSE 8080
 
 # Liveness only - readiness (which checks Postgres) is the orchestrator's probe,
-# so a database blip does not get the container restarted.
+# so a database blip does not get the container restarted. The runtime image has
+# no curl or wget (and no SDK, so `dotnet --version` fails), so bash's /dev/tcp
+# sends the GET. Local Docker only: Azure Container Apps ignores HEALTHCHECK and
+# uses the liveness/readiness probes defined in platform-infra.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
-    CMD ["dotnet", "--version"]
+    CMD ["bash", "-c", "p=${ASPNETCORE_HTTP_PORTS:-8080}; exec 3<>/dev/tcp/127.0.0.1/${p%%[;,]*} && printf 'GET /api/v1/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
 
 ENTRYPOINT ["dotnet", "Hmrc.Rti.Api.dll"]
