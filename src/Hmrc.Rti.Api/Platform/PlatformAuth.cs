@@ -41,13 +41,26 @@ public sealed class PlatformAuthOptions
     public Guid DefaultTenantId { get; set; } = Guid.Parse("00000000-0000-4000-8000-000000000001");
 
     /// <summary>
-    /// Policy name -> permission codes that satisfy it. Holding ANY listed code
-    /// grants the policy. Defaults map onto permission codes the platform
-    /// already issues, so these services work without changing the Python
-    /// SYSTEM_PERMISSIONS catalog. Add dedicated codes there later and list them
-    /// alongside the existing ones for a zero-downtime cutover.
+    /// Each policy this service enforces and the permission codes that satisfy
+    /// it. Holding ANY listed code grants the policy. The mappings point at codes
+    /// the platform already issues, so these services work without changing the
+    /// Python SYSTEM_PERMISSIONS catalog. Add dedicated codes there later and list
+    /// them alongside the existing ones for a zero-downtime cutover.
+    ///
+    /// A list rather than an object keyed by policy name: the names contain a
+    /// colon ("rti:read"), which .NET configuration treats as a section
+    /// separator, so a keyed object never binds.
     /// </summary>
-    public Dictionary<string, string[]> Policies { get; set; } = new();
+    public List<PolicyGrant> Policies { get; set; } = [];
+
+    public string[]? PermissionsFor(string policyName) =>
+        Policies.FirstOrDefault(p => string.Equals(p.Name, policyName, StringComparison.Ordinal))?.Permissions;
+}
+
+public sealed class PolicyGrant
+{
+    public string Name { get; set; } = string.Empty;
+    public string[] Permissions { get; set; } = [];
 }
 
 /// <summary>Per-request tenant and principal, resolved once after authentication.</summary>
@@ -78,9 +91,9 @@ public sealed class PermissionHandler(IOptions<PlatformAuthOptions> options)
             return Task.CompletedTask;
         }
 
-        var accepted = _options.Policies.TryGetValue(requirement.PolicyName, out var codes)
-            ? codes
-            : [requirement.PolicyName];
+        // AddPlatformAuth refuses to start with an unmapped policy, so a name
+        // missing here grants nothing rather than falling back to itself.
+        var accepted = _options.PermissionsFor(requirement.PolicyName) ?? [];
 
         var held = context.User.FindAll(PlatformClaims.Permissions)
             .Select(c => c.Value)
@@ -127,6 +140,16 @@ public static class PlatformAuthExtensions
         {
             throw new InvalidOperationException(
                 $"Unsupported PlatformAuth:Algorithm '{options.Algorithm}'. Only HMAC (HS*) matches the platform.");
+        }
+
+        var policies = policyNames.Distinct(StringComparer.Ordinal).ToArray();
+        var unmapped = policies.Where(p => options.PermissionsFor(p) is not { Length: > 0 }).ToArray();
+        if (unmapped.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"PlatformAuth:Policies grants no permission to {string.Join(", ", unmapped)}. " +
+                "List each policy with the platform permission codes that satisfy it, " +
+                "or every call it guards is refused with 403.");
         }
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(options.SecretKey));
@@ -179,7 +202,7 @@ public static class PlatformAuthExtensions
 
         services.AddAuthorization(auth =>
         {
-            foreach (var policy in policyNames.Distinct(StringComparer.Ordinal))
+            foreach (var policy in policies)
             {
                 auth.AddPolicy(policy, p =>
                 {
