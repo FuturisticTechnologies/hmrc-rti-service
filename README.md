@@ -28,7 +28,8 @@ work here unchanged.
 
 ## API
 
-All routes are under `/api/v1`. OpenAPI document at `/openapi.json`.
+All routes are under `/api/v1`. Swagger UI at `/swagger`, OpenAPI document at
+`/openapi.json`.
 
 | Method | Path | Policy |
 |---|---|---|
@@ -77,20 +78,249 @@ With no HMRC credentials configured, the client returns a **simulated
 acceptance** (and says so in the logs and the audit trail), so the full
 lifecycle is exercisable offline.
 
-## Running it
+## Running it locally
 
-The `dotnet` CLI on this machine is at `C:\Program Files\dotnet\dotnet.exe` and
-is not on `PATH`.
+Everything a new developer needs to build, run and test the service on their
+own machine. Commands are given for PowerShell and Git Bash on Windows (Git
+Bash commands work unchanged on macOS and Linux), run from the repository root
+unless a step says otherwise.
+
+### 1. Prerequisites
+
+| Tool | Version | What it is for |
+|---|---|---|
+| .NET SDK | **10.0.x**. The projects target `net10.0`, the `Dockerfile` builds on `mcr.microsoft.com/dotnet/sdk:10.0` and CI installs `10.0.x`. There is no `global.json`, so any 10.0 SDK works. | Build, run and test. `dotnet --version` must report `10.x` |
+| PostgreSQL | **16**. CI and the payroll API's compose file both use `postgres:16-alpine` | The service's database. **Required**: migrations are applied on boot, so the service will not start without it |
+| Docker Desktop, with Compose v2 | Any current release | Runs Postgres (and optionally this service and the payroll API) in containers. Optional if you already have a Postgres 16 you can reach |
+| Git | Any current release | Cloning |
+| Payroll API ([`national-insurance`](https://github.com/FuturisticTechnologies/national-insurance)) | Its `development` branch, run with its own `docker compose` (or natively with Python 3.12) | Issues the tokens this service accepts, and serves the pay runs an FPS is built from. Optional for health checks and Swagger; required for any `/api/v1/rti/*` call |
+
+### 2. Get the code
 
 ```bash
-# Tests need no database
-& "C:\Program Files\dotnet\dotnet.exe" test tests/Hmrc.Rti.Tests
-
-# Running needs Postgres, so use the whole-platform stack from d:\FT
-docker compose -f ../docker-compose.platform.yml up --build
+git clone https://github.com/FuturisticTechnologies/hmrc-rti-service.git
+cd hmrc-rti-service
+git checkout development
 ```
 
-Service listens on **:8081** in the platform stack.
+Day-to-day work happens on `development`; branch from it. `main` is what is
+deployed: a push to `main` builds the image and rolls it out to the dev
+Container App (`.github/workflows/deploy.yml`).
+
+For the whole platform, clone the payroll API **next to** this repository
+(step 4, option B uses it):
+
+```bash
+cd ..
+git clone https://github.com/FuturisticTechnologies/national-insurance.git
+```
+
+### 3. Configure
+
+The committed `src/Hmrc.Rti.Api/appsettings.json` already holds working local
+defaults, so a first run needs no configuration at all:
+
+| Setting | Local default | Why it works |
+|---|---|---|
+| `ConnectionStrings:Postgres` | `Host=localhost;Port=5432;Database=payroll;Username=payroll;Password=payroll_dev_pwd` | Matches the Postgres in step 4 |
+| `PlatformAuth:SecretKey` | `change-me-in-production-this-must-be-at-least-32-chars` | Equals the payroll API's default `APP_SECRET_KEY` |
+| `PayrollApi:BaseUrl` | `http://localhost:8000` | Where the payroll API listens locally |
+| `Hmrc:ClientId` / `Hmrc:ClientSecret` | empty | Empty means HMRC is **simulated**: a transmit returns a simulated acceptance (`SIM-…`) and says so in the log and the audit trail |
+
+Override any of them with environment variables, using a double underscore for
+nesting (`ConnectionStrings__Postgres`, `PlatformAuth__SecretKey`,
+`PayrollApi__BaseUrl`, `Hmrc__ClientId`, `Hmrc__ClientSecret`, …), or with a
+`src/Hmrc.Rti.Api/appsettings.Development.json`, which is gitignored and only
+loaded when `ASPNETCORE_ENVIRONMENT=Development`. Every key is listed under
+[Configuration](#configuration).
+
+Easy to get wrong:
+
+- `PlatformAuth:SecretKey` must be **exactly** the payroll API's
+  `APP_SECRET_KEY`, and at least 32 characters. Change one, change both.
+- Use `ConnectionStrings__Postgres`, not `DATABASE_URL`. `DATABASE_URL` is only
+  read when no `ConnectionStrings:Postgres` exists, and `appsettings.json`
+  always sets one, so `DATABASE_URL` is silently ignored.
+  `ConnectionStrings__Postgres` itself accepts a `postgresql://` URL, including
+  the `postgresql+asyncpg://` form the payroll API uses.
+- `dotnet run` does not read `.env` files. `.env.example` is only a list of the
+  same keys.
+- Leave `Hmrc__AllowLiveSubmission` at `false` locally — see
+  [Live-submission gating](#live-submission-gating).
+
+### 4. Start Postgres
+
+Pick **one** — both use port 5432.
+
+**A. Postgres on its own**, matching the default connection string:
+
+```bash
+docker run -d --name ftpay-postgres -p 5432:5432 -e POSTGRES_USER=payroll -e POSTGRES_PASSWORD=payroll_dev_pwd -e POSTGRES_DB=payroll postgres:16-alpine
+docker exec ftpay-postgres pg_isready -U payroll -d payroll
+```
+
+**B. The payroll API's stack** — Postgres plus the payroll API on
+http://localhost:8000 (and its frontend on 4200). From the `national-insurance`
+clone:
+
+```bash
+cd ../national-insurance
+cp .env.example .env
+docker compose up --build -d
+```
+
+That Postgres (container `payroll-postgres`) has the same database, user and
+password, so this service's defaults point at it unchanged. The platform shares
+one database; each service keeps to its own schema.
+
+There are no migrations to run by hand. On start-up the service applies every
+`migrations/*.sql` file it has not applied before, in filename order, and
+records each in `rti.schema_migrations`. The first boot creates the `rti`
+schema and logs `migrations.applied 0001_rti_schema`.
+
+### 5. Run the service
+
+**With `dotnet run`** — listens on http://localhost:8081, the port the platform
+uses for this service.
+
+PowerShell:
+
+```powershell
+$env:ASPNETCORE_ENVIRONMENT = "Development"
+$env:ASPNETCORE_URLS = "http://localhost:8081"
+dotnet run --project src/Hmrc.Rti.Api
+```
+
+Git Bash:
+
+```bash
+ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS=http://localhost:8081 dotnet run --project src/Hmrc.Rti.Api
+```
+
+Set both variables. The repository has no `launchSettings.json`, so without
+them the service listens on http://localhost:5000 and runs as `Production`.
+`Ctrl+C` stops it.
+
+**With Docker** — builds the repository's `Dockerfile`. The container listens on
+8080, published here as 8081. There is no compose file in this repository.
+
+PowerShell:
+
+```powershell
+docker build -t hmrc-rti-service .
+docker run --rm --name hmrc-rti -p 8081:8080 `
+  -e "ConnectionStrings__Postgres=Host=host.docker.internal;Port=5432;Database=payroll;Username=payroll;Password=payroll_dev_pwd" `
+  -e "PayrollApi__BaseUrl=http://host.docker.internal:8000" `
+  hmrc-rti-service
+```
+
+Git Bash:
+
+```bash
+docker build -t hmrc-rti-service .
+docker run --rm --name hmrc-rti -p 8081:8080 \
+  -e "ConnectionStrings__Postgres=Host=host.docker.internal;Port=5432;Database=payroll;Username=payroll;Password=payroll_dev_pwd" \
+  -e "PayrollApi__BaseUrl=http://host.docker.internal:8000" \
+  hmrc-rti-service
+```
+
+Inside a container `localhost` is the container itself, hence
+`host.docker.internal` (Docker Desktop's name for your machine). The image
+already sets `ASPNETCORE_ENVIRONMENT=Development` and
+`ASPNETCORE_HTTP_PORTS=8080` and ships `appsettings.json`, so the secret
+default still matches the payroll API's; add `-e PlatformAuth__SecretKey=...`
+if yours differs.
+
+### 6. Verify
+
+| URL | Expect |
+|---|---|
+| http://localhost:8081/api/v1/health | `200` `{"status":"ok","service":"hmrc-rti-service",…,"environment":"development"}`. Liveness; never touches the database |
+| http://localhost:8081/api/v1/health/ready | `200` `{"status":"ready","database":"ok"}`, or `503` when Postgres is unreachable |
+| http://localhost:8081/api/v1/meta | HMRC posture — locally `credentials_configured: false`, `live_submission_permitted: false` |
+| http://localhost:8081/swagger | Swagger UI (redirects to `/swagger/index.html`) |
+| http://localhost:8081/openapi.json | The OpenAPI document |
+
+To call a secured endpoint, log in to the payroll API (running on port 8000 —
+step 4, option B) and present its `access_token`. The payroll API seeds a
+development admin, whose token carries every permission this service checks.
+
+PowerShell:
+
+```powershell
+$login = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/auth/login `
+  -ContentType "application/json" `
+  -Body '{"email":"admin@payrollfuturistic.co.uk","password":"Admin12345!"}'
+Invoke-RestMethod -Uri http://localhost:8081/api/v1/rti/submissions `
+  -Headers @{ Authorization = "Bearer $($login.access_token)" }
+```
+
+Git Bash:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@payrollfuturistic.co.uk","password":"Admin12345!"}' \
+  | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+curl -s http://localhost:8081/api/v1/rti/submissions -H "Authorization: Bearer $TOKEN"
+```
+
+A fresh database returns an empty list (`[]`; PowerShell prints nothing). In
+Swagger, click **Authorize** and paste the `access_token` value. Filing goes one
+step further: `POST /api/v1/rti/fps` forwards your token to
+`GET /api/v1/pay-runs/{id}` on the payroll API, so it needs a committed pay run
+there.
+
+### 7. Tests
+
+```bash
+dotnet test tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj
+```
+
+No database or payroll API needed; expect `Passed!  - Failed: 0, Passed: 115`.
+There is no solution file, so always name the project — a bare `dotnet test`
+fails with MSB1003.
+
+CI's Restore step currently fails with **MSB1008** ("Only one project file may
+be specified"), because it passes both `.csproj` files to one
+`dotnet restore`. To run the CI sequence locally, restore the test project
+alone; it pulls in the API through its project reference:
+
+```bash
+dotnet restore tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj
+dotnet build tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj --configuration Release --no-restore
+dotnet test tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj --configuration Release --no-build
+```
+
+### 8. Stop and reset
+
+- **Service** (`dotnet run` or `docker run`): `Ctrl+C`. The container was
+  started with `--rm`, so nothing is left behind.
+- **Postgres, option A**: `docker stop ftpay-postgres`, and
+  `docker start ftpay-postgres` to bring it back. To wipe it:
+  `docker rm -f -v ftpay-postgres`, then repeat step 4.
+- **Payroll API stack, option B**: in `national-insurance`, `docker compose down`;
+  `docker compose down -v` also deletes its database volume.
+- **Only this service's data**: drop its schema; the next boot re-creates it.
+  With option B, use the container name `payroll-postgres`.
+
+  ```bash
+  docker exec ftpay-postgres psql -U payroll -d payroll -c "DROP SCHEMA rti CASCADE;"
+  ```
+
+### 9. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| Every secured call returns `401 {"detail":"Authentication required"}`, although login worked | The token was not signed with this service's `PlatformAuth:SecretKey`; it must equal the payroll API's `APP_SECRET_KEY`. Also check the token's age — access tokens expire after 30 minutes (the payroll API's `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`), so log in again — and that you sent `access_token`, not `refresh_token`, which is refused here |
+| Start-up fails with `PlatformAuth:SecretKey must be set and at least 32 characters` | The secret is empty or shorter than 32 characters |
+| Start-up fails with `Npgsql.NpgsqlException: Failed to connect to 127.0.0.1:5432` | Postgres is not running, or not at that host and port. Migrations run before the service starts listening, so nothing answers on 8081 at all. If Postgres goes away later, `/api/v1/health/ready` returns `503 {"detail":"Database is not reachable"}` while `/api/v1/health` stays `200` |
+| A `DATABASE_URL` you set has no effect | Expected — see step 3. Set `ConnectionStrings__Postgres` instead; a `postgresql://` URL is accepted there |
+| `Failed to bind to address http://127.0.0.1:8081: address already in use`, or the service is on `http://localhost:5000` and `/api/v1/meta` says `production` | Another process holds the port: choose another `ASPNETCORE_URLS`. Port 5000 and `production` mean `ASPNETCORE_URLS` and `ASPNETCORE_ENVIRONMENT` were not set. If a native Postgres already has 5432, publish the container as `-p 5433:5432` and put `Port=5433` in `ConnectionStrings__Postgres` |
+| `POST /api/v1/rti/fps` returns `502 The payroll API is unreachable.`, `401 The payroll API rejected the forwarded credentials.` or `404 Pay run … was not found.` | 502: `PayrollApi:BaseUrl` is wrong or the payroll API is down (from a container it must be `host.docker.internal`, not `localhost`). 401: the token was not issued by that payroll API, or its user is not in that API's database. 404: no such pay run for the token's tenant |
+
+Background on the .NET 10 requirement, HMRC gating and what the unit tests do
+not cover is in [`docs/local-development.md`](docs/local-development.md).
 
 ## Configuration
 
@@ -99,7 +329,7 @@ Environment variables use the .NET double-underscore convention.
 | Key | Default | Notes |
 |---|---|---|
 | `ConnectionStrings__Postgres` | localhost | Also accepts a `postgresql://` URL, including SQLAlchemy `+asyncpg` forms |
-| `PlatformAuth__SecretKey` | — | **Must equal the payroll API's `APP_SECRET_KEY`** |
+| `PlatformAuth__SecretKey` | `change-me-in-production-this-must-be-at-least-32-chars` (local only) | **Must equal the payroll API's `APP_SECRET_KEY`**; at least 32 characters |
 | `PayrollApi__BaseUrl` | `http://localhost:8000` | |
 | `Hmrc__BaseUrl` | HMRC sandbox | |
 | `Hmrc__ClientId` / `__ClientSecret` | empty | Empty means simulate |
@@ -115,7 +345,7 @@ src/Hmrc.Rti.Api/
   Application/    envelope builder + validation, submission orchestration
   Endpoints/      minimal-API route definitions
 migrations/       ordered SQL, applied on boot
-tests/            104 unit tests, no database required
+tests/            115 unit tests, no database required
 ```
 
 The test count above is collected cases, not test methods — `[Theory]` rows
@@ -126,7 +356,7 @@ dotnet test tests/Hmrc.Rti.Tests --list-tests
 ```
 
 Quote that number rather than a remembered one. This figure was documented as
-36, then 89, and was wrong both times within a sprint of being written — not
+36, then 89, then 104, and was wrong each time within a sprint of being written — not
 because anyone estimated, but because later tickets added tests and nobody came
 back to the README.
 
