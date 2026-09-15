@@ -237,7 +237,24 @@ public sealed class SubmissionService(
         submission.Attempts += 1;
         await db.SaveChangesAsync(ct);
 
-        var result = await hmrc.SubmitAsync(submission, ct);
+        HmrcSubmissionResult result;
+        try
+        {
+            result = await hmrc.SubmitAsync(submission, ct);
+        }
+        catch (Exception ex)
+        {
+            // No outcome came back - the token request failed, or the client
+            // refused before sending. Left in Transmitting, neither transmit nor
+            // retry would ever touch this submission again, so record a failed
+            // attempt. Not the request's token: the caller may have gone away.
+            submission.LastError = Truncate(ex.Message, 2000);
+            submission.NextAttemptAt = DateTimeOffset.UtcNow.Add(BackoffFor(submission.Attempts));
+            Transition(submission, RtiSubmissionStatus.Failed, "failed", ex.Message);
+            await db.SaveChangesAsync(CancellationToken.None);
+            throw;
+        }
+
         submission.IsLive = result.WasLive;
 
         switch (result.Status)
