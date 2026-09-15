@@ -19,7 +19,9 @@ using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Payroll.Platform;
 
@@ -262,9 +264,22 @@ public sealed class IdempotencyStore(string schema)
         cmd.Parameters.Add(SqlMigrator.Param(cmd, "@path", request.Path.Value ?? string.Empty));
         cmd.Parameters.Add(SqlMigrator.Param(cmd, "@hash", RequestHash(request, payload)));
         cmd.Parameters.Add(SqlMigrator.Param(cmd, "@status", statusCode));
-        cmd.Parameters.Add(SqlMigrator.Param(cmd, "@body", JsonSerializer.Serialize(responseBody, Json)));
+        cmd.Parameters.Add(SqlMigrator.Param(cmd, "@body", ResponseBody(request, responseBody)));
         cmd.Parameters.Add(SqlMigrator.Param(cmd, "@tenant", tenantId));
         await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// The body exactly as the endpoint writes it, so a replay is the same
+    /// document as the original response - snake_case and all, not the store's
+    /// own web defaults.
+    /// </summary>
+    internal static string ResponseBody(HttpRequest request, object responseBody)
+    {
+        var options = request.HttpContext.RequestServices?
+            .GetService<IOptions<JsonOptions>>()?.Value.SerializerOptions ?? Json;
+
+        return JsonSerializer.Serialize(responseBody, responseBody.GetType(), options);
     }
 
     private static string? Normalise(HttpRequest request)
