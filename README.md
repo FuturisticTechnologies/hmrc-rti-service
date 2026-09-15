@@ -275,10 +275,10 @@ No database or payroll API needed; expect `Passed!  - Failed: 0, Passed: 115`.
 There is no solution file, so always name the project — a bare `dotnet test`
 fails with MSB1003.
 
-CI's Restore step currently fails with **MSB1008** ("Only one project file may
-be specified"), because it passes both `.csproj` files to one
-`dotnet restore`. To run the CI sequence locally, restore the test project
-alone; it pulls in the API through its project reference:
+CI restores the test project alone — `dotnet restore` accepts one project
+(two fail with **MSB1008**), and the test project pulls in the API through its
+project reference — then builds and tests in Release. To run the CI sequence
+locally:
 
 ```bash
 dotnet restore tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj
