@@ -103,6 +103,17 @@ public static class PlatformPipelineExtensions
                 await ProblemWriter.WriteAsync(ctx.Response, ex.StatusCode, ex.Message);
                 return;
             }
+            catch (BadHttpRequestException ex)
+            {
+                // Binding's own 4xx: a body that is not JSON, the wrong content
+                // type, a field of the wrong type. Minimal APIs throw it instead
+                // of answering whenever ThrowOnBadRequest is on (Development), and
+                // the catch-all below would report the caller's mistake as ours.
+                logger.LogWarning("request.rejected {RequestId} {Status} {Detail}",
+                    requestId, ex.StatusCode, ex.Message);
+                await ProblemWriter.WriteAsync(ctx.Response, ex.StatusCode, ex.Message);
+                return;
+            }
             catch (Exception ex)
             {
                 logger.LogError(ex, "request.failed {RequestId} {Method} {Path}",

@@ -237,7 +237,24 @@ public sealed class SubmissionService(
         submission.Attempts += 1;
         await db.SaveChangesAsync(ct);
 
-        var result = await hmrc.SubmitAsync(submission, ct);
+        HmrcSubmissionResult result;
+        try
+        {
+            result = await hmrc.SubmitAsync(submission, ct);
+        }
+        catch (Exception ex)
+        {
+            // No outcome came back - the token request failed, or the client
+            // refused before sending. Left in Transmitting, neither transmit nor
+            // retry would ever touch this submission again, so record a failed
+            // attempt. Not the request's token: the caller may have gone away.
+            submission.LastError = Truncate(ex.Message, 2000);
+            submission.NextAttemptAt = DateTimeOffset.UtcNow.Add(BackoffFor(submission.Attempts));
+            Transition(submission, RtiSubmissionStatus.Failed, "failed", ex.Message);
+            await db.SaveChangesAsync(CancellationToken.None);
+            throw;
+        }
+
         submission.IsLive = result.WasLive;
 
         switch (result.Status)
@@ -280,6 +297,19 @@ public sealed class SubmissionService(
         {
             throw ApiException.Conflict(
                 $"A submission in status '{submission.Status}' cannot be retried.");
+        }
+
+        // Retry is for a transmission that went wrong. A submission that never
+        // passed local validation still holds the payload that failed it, and
+        // re-queueing would send that to HMRC with nothing checking it again.
+        var validated = await db.SubmissionEvents.AnyAsync(
+            e => e.SubmissionId == id && e.ToStatus == RtiSubmissionStatus.Validated, ct);
+
+        if (!validated)
+        {
+            throw ApiException.Conflict(
+                "This submission failed local validation, so retrying it would transmit the same " +
+                "invalid payload. Correct the source data and create a new submission.");
         }
 
         if (submission.Attempts >= MaxAttempts)
