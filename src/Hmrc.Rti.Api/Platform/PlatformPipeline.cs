@@ -10,12 +10,19 @@ using System.Text.Json;
 
 namespace Payroll.Platform;
 
-/// <summary>Writes the platform's error envelope: {"detail": "..."}.</summary>
+/// <summary>
+/// Writes the platform's error envelope: {"detail": "..."}, plus an "errors"
+/// map of field name to messages when the failure is about specific fields.
+/// </summary>
 public static class ProblemWriter
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public static async Task WriteAsync(HttpResponse response, int statusCode, string detail)
+    public static async Task WriteAsync(
+        HttpResponse response,
+        int statusCode,
+        string detail,
+        IReadOnlyDictionary<string, string[]>? errors = null)
     {
         if (response.HasStarted)
         {
@@ -25,7 +32,11 @@ public static class ProblemWriter
         response.Clear();
         response.StatusCode = statusCode;
         response.ContentType = "application/json; charset=utf-8";
-        await response.WriteAsync(JsonSerializer.Serialize(new { detail }, Json));
+
+        // "errors" is additive: a caller that only reads "detail" sees the same
+        // envelope as before, and it is left out entirely when there is none.
+        object body = errors is { Count: > 0 } ? new { detail, errors } : new { detail };
+        await response.WriteAsync(JsonSerializer.Serialize(body, Json));
     }
 
     public static IResult Problem(int statusCode, string detail) =>
@@ -33,13 +44,20 @@ public static class ProblemWriter
 }
 
 /// <summary>Thrown by application code to produce a platform error response.</summary>
-public sealed class ApiException(int statusCode, string detail) : Exception(detail)
+public sealed class ApiException(
+    int statusCode, string detail, IReadOnlyDictionary<string, string[]>? errors = null) : Exception(detail)
 {
     public int StatusCode { get; } = statusCode;
+
+    /// <summary>Per-field messages, keyed by the request's JSON property name.</summary>
+    public IReadOnlyDictionary<string, string[]>? Errors { get; } = errors;
 
     public static ApiException NotFound(string detail = "Not found") => new(404, detail);
     public static ApiException Conflict(string detail) => new(409, detail);
     public static ApiException BadRequest(string detail) => new(400, detail);
+
+    public static ApiException BadRequest(string detail, IReadOnlyDictionary<string, string[]> errors) =>
+        new(400, detail, errors);
     public static ApiException Unprocessable(string detail) => new(422, detail);
     public static ApiException Unauthorized(string detail = "Authentication required") => new(401, detail);
     public static ApiException BadGateway(string detail) => new(502, detail);
@@ -100,7 +118,7 @@ public static class PlatformPipelineExtensions
             {
                 logger.LogWarning("request.rejected {RequestId} {Status} {Detail}",
                     requestId, ex.StatusCode, ex.Message);
-                await ProblemWriter.WriteAsync(ctx.Response, ex.StatusCode, ex.Message);
+                await ProblemWriter.WriteAsync(ctx.Response, ex.StatusCode, ex.Message, ex.Errors);
                 return;
             }
             catch (BadHttpRequestException ex)
