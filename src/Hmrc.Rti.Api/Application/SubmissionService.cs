@@ -101,6 +101,8 @@ public sealed class SubmissionService(
     public async Task<SubmissionResponse> CreateFpsAsync(
         CreateFpsRequest request, string bearerToken, CancellationToken ct)
     {
+        RtiRequestValidator.EnsureValid(request);
+
         var payRun = await payrollApi.GetPayRunAsync(request.PayRunId, bearerToken, tenant.TenantId, ct);
 
         // Belt and braces. RLS should already have made another tenant's pay run
@@ -166,6 +168,8 @@ public sealed class SubmissionService(
 
     public async Task<SubmissionResponse> CreateEpsAsync(CreateEpsRequest request, CancellationToken ct)
     {
+        RtiRequestValidator.EnsureValid(request, RtiRequestValidator.UkToday(DateTimeOffset.UtcNow));
+
         var submission = new RtiSubmission
         {
             TenantId = tenant.TenantId,

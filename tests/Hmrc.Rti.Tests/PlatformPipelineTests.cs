@@ -35,6 +35,40 @@ public class PlatformPipelineTests
         Assert.False(string.IsNullOrWhiteSpace(detail));
     }
 
+    [Fact]
+    public async Task Field_errors_ride_alongside_detail_in_the_envelope()
+    {
+        var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var app = new ApplicationBuilder(services);
+        app.UsePlatformPipeline(new HostingEnvironment { EnvironmentName = Environments.Development });
+        app.Run(_ => throw ApiException.BadRequest(
+            "EPS request is invalid.",
+            new Dictionary<string, string[]> { ["totalPayeTax"] = ["Must not be negative (was -1)."] }));
+
+        var ctx = new DefaultHttpContext { RequestServices = services };
+        ctx.Response.Body = new MemoryStream();
+        await app.Build()(ctx);
+
+        ctx.Response.Body.Position = 0;
+        using var doc = await JsonDocument.ParseAsync(ctx.Response.Body);
+        Assert.Equal(400, ctx.Response.StatusCode);
+        Assert.Equal("EPS request is invalid.", doc.RootElement.GetProperty("detail").GetString());
+        var messages = doc.RootElement.GetProperty("errors").GetProperty("totalPayeTax");
+        Assert.Equal("Must not be negative (was -1).", Assert.Single(messages.EnumerateArray()).GetString());
+    }
+
+    [Fact]
+    public async Task An_error_without_field_errors_keeps_the_plain_envelope()
+    {
+        var ctx = new DefaultHttpContext { Response = { Body = new MemoryStream() } };
+
+        await ProblemWriter.WriteAsync(ctx.Response, 409, "Conflict.");
+
+        ctx.Response.Body.Position = 0;
+        using var doc = await JsonDocument.ParseAsync(ctx.Response.Body);
+        Assert.False(doc.RootElement.TryGetProperty("errors", out _));
+    }
+
     private sealed record Probe(int PeriodNumber);
 
     private static async Task<(int Status, string? Detail)> SendAsync(string contentType, string body)
