@@ -65,6 +65,37 @@ public class SubmissionServiceTests
         Assert.Equal(nameof(RtiSubmissionStatus.Failed), after.Status);
     }
 
+    [Fact]
+    public async Task A_malformed_eps_request_is_refused_before_anything_is_saved()
+    {
+        // Unlike a bad reference, a negative liability is not an attempted
+        // filing worth auditing - it is a request no payroll could produce.
+        var hmrc = new ThrowingHmrc(new InvalidOperationException("HMRC must not be called."));
+        var malformed = ValidEps() with { TotalPayeTax = -800.00m };
+
+        var error = await Assert.ThrowsAsync<ApiException>(() => Service(hmrc).CreateEpsAsync(malformed, default));
+
+        Assert.Equal(400, error.StatusCode);
+        Assert.NotNull(error.Errors);
+        Assert.Contains("totalPayeTax", error.Errors.Keys);
+        Assert.Empty(await Service(hmrc).ListAsync(null, null, null, default));
+    }
+
+    [Fact]
+    public async Task An_fps_request_without_a_pay_run_is_refused_before_the_payroll_service_is_asked()
+    {
+        // NoPayrollApi throws if called, so reaching it would surface as a
+        // NotSupportedException rather than the 400 asserted here.
+        var hmrc = new ThrowingHmrc(new InvalidOperationException("HMRC must not be called."));
+        var request = new CreateFpsRequest { EmployerPayeReference = Paye, AccountsOfficeReference = AccountsOffice };
+
+        var error = await Assert.ThrowsAsync<ApiException>(
+            () => Service(hmrc).CreateFpsAsync(request, "token", default));
+
+        Assert.Equal(400, error.StatusCode);
+        Assert.Contains("payRunId", error.Errors!.Keys);
+    }
+
     private SubmissionService Service(IHmrcClient hmrc) =>
         new(new RtiDbContext(_options, _tenant), new NoPayrollApi(), hmrc, _tenant,
             NullLogger<SubmissionService>.Instance);
