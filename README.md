@@ -305,7 +305,7 @@ there.
 dotnet test tests/Hmrc.Rti.Tests/Hmrc.Rti.Tests.csproj
 ```
 
-No database or payroll API needed; expect `Passed!  - Failed: 0, Passed: 115`.
+No database or payroll API needed; expect `Passed!  - Failed: 0, Passed: 259`.
 There is no solution file, so always name the project — a bare `dotnet test`
 fails with MSB1003.
 
@@ -374,7 +374,7 @@ src/Hmrc.Rti.Api/
   Application/    envelope builder + validation, submission orchestration
   Endpoints/      minimal-API route definitions
 migrations/       ordered SQL, applied on boot
-tests/            115 unit tests, no database required
+tests/            259 unit tests, no database required
 ```
 
 The test count above is collected cases, not test methods — `[Theory]` rows
