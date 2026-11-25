@@ -18,7 +18,15 @@ namespace Hmrc.Rti.Api.Application.Smp;
 /// <param name="TaxYear">Starting year, e.g. 2025 for 2025-26.</param>
 /// <param name="StandardWeeklyRate">Flat weekly rate paid after the higher-rate weeks.</param>
 /// <param name="LowerEarningsLimit">Average weekly earnings an employee must reach to qualify.</param>
-public sealed record SmpRateSet(int TaxYear, decimal StandardWeeklyRate, decimal LowerEarningsLimit);
+/// <param name="StandardRateEffectiveFrom">
+/// First day the standard rate applies. Weekly statutory rates change on the
+/// first Sunday on or after 6 April, which is not always 6 April itself.
+/// </param>
+public sealed record SmpRateSet(
+    int TaxYear,
+    decimal StandardWeeklyRate,
+    decimal LowerEarningsLimit,
+    DateOnly StandardRateEffectiveFrom);
 
 public static class SmpRates
 {
@@ -33,8 +41,10 @@ public static class SmpRates
 
     private static readonly Dictionary<int, SmpRateSet> Table = new SmpRateSet[]
     {
-        new(2024, StandardWeeklyRate: 184.03m, LowerEarningsLimit: 123m),
-        new(2025, StandardWeeklyRate: 187.18m, LowerEarningsLimit: 125m),
+        new(2024, StandardWeeklyRate: 184.03m, LowerEarningsLimit: 123m,
+            StandardRateEffectiveFrom: new DateOnly(2024, 4, 7)),
+        new(2025, StandardWeeklyRate: 187.18m, LowerEarningsLimit: 125m,
+            StandardRateEffectiveFrom: new DateOnly(2025, 4, 6)),
     }.ToDictionary(r => r.TaxYear);
 
     public static bool TryGet(int taxYear, [NotNullWhen(true)] out SmpRateSet? rates) =>
@@ -50,4 +60,17 @@ public static class SmpRates
     /// <summary>The rates in force on a given date.</summary>
     public static SmpRateSet ForDate(DateOnly date) =>
         ForTaxYear(RtiRequestValidator.TaxYearOf(date));
+
+    /// <summary>
+    /// The standard weekly rate in force on a date. In the few days of a tax
+    /// year before its rate takes effect, the previous year's rate still
+    /// applies; if that year is not configured this raises rather than guess.
+    /// </summary>
+    public static decimal StandardRateOn(DateOnly date)
+    {
+        var rates = ForDate(date);
+        return date < rates.StandardRateEffectiveFrom
+            ? ForTaxYear(rates.TaxYear - 1).StandardWeeklyRate
+            : rates.StandardWeeklyRate;
+    }
 }
