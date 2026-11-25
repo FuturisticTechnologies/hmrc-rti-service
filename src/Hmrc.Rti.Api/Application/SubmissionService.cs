@@ -31,6 +31,12 @@ public sealed record CreateEpsRequest
     public decimal TotalEmployeeNi { get; init; }
     public decimal TotalEmployerNi { get; init; }
     public bool NoPaymentForPeriod { get; init; }
+
+    /// <summary>Statutory maternity pay recovered for the period. See <c>SmpRecovery</c>.</summary>
+    public decimal SmpRecovered { get; init; }
+
+    /// <summary>NIC compensation on SMP for the period; small employers only.</summary>
+    public decimal SmpNicCompensation { get; init; }
 }
 
 public sealed record SubmissionResponse
@@ -190,7 +196,8 @@ public sealed class SubmissionService(
             submission.EmployerPayeReference, submission.AccountsOfficeReference,
             submission.CorrelationId,
             request.TotalEmployeeNi, request.TotalEmployerNi, request.TotalPayeTax,
-            request.NoPaymentForPeriod);
+            request.NoPaymentForPeriod,
+            request.SmpRecovered, request.SmpNicCompensation);
         submission.PayloadHash = RtiEnvelopeBuilder.Hash(submission.Payload);
 
         db.Submissions.Add(submission);

@@ -123,7 +123,9 @@ public static partial class RtiEnvelopeBuilder
         decimal totalEmployeeNi,
         decimal totalEmployerNi,
         decimal totalPayeTax,
-        bool noPaymentForPeriod)
+        bool noPaymentForPeriod,
+        decimal smpRecovered = 0m,
+        decimal smpNicCompensation = 0m)
     {
         var envelope = new
         {
@@ -138,7 +140,15 @@ public static partial class RtiEnvelopeBuilder
                 payeTax = Money(totalPayeTax),
                 employeeNi = Money(totalEmployeeNi),
                 employerNi = Money(totalEmployerNi),
+                // Gross liability. Recoveries are reported beside it, not netted
+                // off, so HMRC sees both figures as the employer declared them.
                 totalLiability = Money(totalPayeTax + totalEmployeeNi + totalEmployerNi),
+                statutoryPayRecovery = new
+                {
+                    smpRecovered = Money(smpRecovered),
+                    nicCompensationOnSmp = Money(smpNicCompensation),
+                    totalRecovered = Money(smpRecovered + smpNicCompensation),
+                },
             },
         };
 

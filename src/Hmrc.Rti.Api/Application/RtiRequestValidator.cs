@@ -50,6 +50,16 @@ public static class RtiRequestValidator
         CheckAmount(errors, "totalPayeTax", request.TotalPayeTax);
         CheckAmount(errors, "totalEmployeeNi", request.TotalEmployeeNi);
         CheckAmount(errors, "totalEmployerNi", request.TotalEmployerNi);
+        CheckAmount(errors, "smpRecovered", request.SmpRecovered);
+        CheckAmount(errors, "smpNicCompensation", request.SmpNicCompensation);
+
+        // Compensation is a percentage of SMP that is itself recovered in full
+        // or at 92%, so it can never be the larger of the two.
+        if (request.SmpNicCompensation > request.SmpRecovered)
+        {
+            Add(errors, "smpNicCompensation",
+                "NIC compensation cannot exceed the SMP recovered; it is a fraction of the SMP paid.");
+        }
 
         // A no-payment declaration tells HMRC nothing is owed for the period.
         // Sending it with liabilities attached leaves HMRC to guess which half

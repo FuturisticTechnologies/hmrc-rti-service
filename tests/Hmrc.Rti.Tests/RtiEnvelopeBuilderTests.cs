@@ -183,6 +183,42 @@ public class RtiEnvelopeBuilderTests
     }
 
     [Fact]
+    public void Eps_envelope_reports_smp_recovery_and_compensation_beside_gross_liability()
+    {
+        var json = RtiEnvelopeBuilder.BuildEps(
+            2026, 5, Paye, AccountsOffice, "corr-3",
+            totalEmployeeNi: 300.00m, totalEmployerNi: 420.00m, totalPayeTax: 800.00m,
+            noPaymentForPeriod: false,
+            smpRecovered: 1000.00m, smpNicCompensation: 30.00m);
+
+        using var doc = JsonDocument.Parse(json);
+        var declaration = doc.RootElement.GetProperty("declaration");
+        var recovery = declaration.GetProperty("statutoryPayRecovery");
+
+        Assert.Equal(1000.00m, recovery.GetProperty("smpRecovered").GetDecimal());
+        Assert.Equal(30.00m, recovery.GetProperty("nicCompensationOnSmp").GetDecimal());
+        Assert.Equal(1030.00m, recovery.GetProperty("totalRecovered").GetDecimal());
+
+        // Not netted off: the declared liability is unchanged by recovery.
+        Assert.Equal(1520.00m, declaration.GetProperty("totalLiability").GetDecimal());
+    }
+
+    [Fact]
+    public void Eps_envelope_without_smp_reports_zero_recovery()
+    {
+        var json = RtiEnvelopeBuilder.BuildEps(
+            2026, 5, Paye, AccountsOffice, "corr-4",
+            totalEmployeeNi: 300.00m, totalEmployerNi: 420.00m, totalPayeTax: 800.00m,
+            noPaymentForPeriod: false);
+
+        using var doc = JsonDocument.Parse(json);
+        var recovery = doc.RootElement.GetProperty("declaration").GetProperty("statutoryPayRecovery");
+
+        Assert.Equal(0m, recovery.GetProperty("smpRecovered").GetDecimal());
+        Assert.Equal(0m, recovery.GetProperty("totalRecovered").GetDecimal());
+    }
+
+    [Fact]
     public void Hash_is_stable_and_detects_alteration()
     {
         var payRun = ValidPayRun();

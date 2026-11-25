@@ -59,6 +59,59 @@ public class RtiRequestValidatorTests
     }
 
     [Fact]
+    public void An_eps_with_smp_recovery_and_compensation_passes()
+    {
+        var request = ValidEps() with { SmpRecovered = 1000.00m, SmpNicCompensation = 30.00m };
+
+        RtiRequestValidator.EnsureValid(request, Today);
+    }
+
+    [Theory]
+    [InlineData(-0.01, "Must not be negative")]
+    [InlineData(10.005, "at most 2 decimal places")]
+    public void An_smp_recovery_amount_that_cannot_be_filed_is_a_field_error(double amount, string expected)
+    {
+        var request = ValidEps() with { SmpRecovered = (decimal)amount };
+
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(request, Today));
+
+        Assert.Contains(errors["smpRecovered"], m => m.Contains(expected));
+    }
+
+    [Fact]
+    public void Smp_compensation_cannot_exceed_the_smp_recovered()
+    {
+        var request = ValidEps() with { SmpRecovered = 10.00m, SmpNicCompensation = 10.01m };
+
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(request, Today));
+
+        Assert.Contains("cannot exceed", Assert.Single(errors["smpNicCompensation"]));
+    }
+
+    [Fact]
+    public void Smp_compensation_without_any_recovery_is_refused()
+    {
+        var request = ValidEps() with { SmpNicCompensation = 5.00m };
+
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(request, Today));
+
+        Assert.Contains("smpNicCompensation", errors.Keys);
+    }
+
+    [Fact]
+    public void A_no_payment_declaration_may_still_recover_smp()
+    {
+        // Recovery is not a liability: an employer can owe nothing and still reclaim.
+        var request = ValidEps() with
+        {
+            TotalPayeTax = 0m, TotalEmployeeNi = 0m, TotalEmployerNi = 0m, NoPaymentForPeriod = true,
+            SmpRecovered = 500.00m,
+        };
+
+        RtiRequestValidator.EnsureValid(request, Today);
+    }
+
+    [Fact]
     public void A_no_payment_declaration_with_liabilities_is_contradictory()
     {
         var request = ValidEps() with { NoPaymentForPeriod = true };
