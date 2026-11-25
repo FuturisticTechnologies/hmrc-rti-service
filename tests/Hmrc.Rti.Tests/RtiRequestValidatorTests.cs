@@ -1,4 +1,5 @@
 using Hmrc.Rti.Api.Application;
+using Hmrc.Rti.Api.Application.Smp;
 using Payroll.Platform;
 using Xunit;
 
@@ -177,6 +178,101 @@ public class RtiRequestValidatorTests
         {
             PayRunId = Guid.NewGuid(), EmployerPayeReference = Paye, AccountsOfficeReference = AccountsOffice,
         });
+    }
+
+    // ---------------------------------------------------------- maternity pay
+
+    private static SmpEmployeeRequest Maternity(string number = "001") => new()
+    {
+        EmployeeNumber = number,
+        ExpectedDueDate = new DateOnly(2025, 8, 13),
+        EmploymentStartDate = new DateOnly(2023, 1, 1),
+        LeaveStartDate = new DateOnly(2025, 6, 1),
+        NoticeGivenDate = new DateOnly(2025, 3, 1),
+        HasEvidenceOfPregnancy = true,
+        AverageWeeklyEarnings = 300m,
+    };
+
+    private static CreateFpsRequest FpsWith(params SmpEmployeeRequest[] maternity) => new()
+    {
+        PayRunId = Guid.NewGuid(),
+        EmployerPayeReference = Paye,
+        AccountsOfficeReference = AccountsOffice,
+        MaternityPay = maternity,
+    };
+
+    [Fact]
+    public void An_fps_request_with_well_formed_maternity_pay_passes()
+    {
+        RtiRequestValidator.EnsureValid(FpsWith(Maternity("001"), Maternity("002")));
+    }
+
+    [Fact]
+    public void An_ineligible_employee_is_not_a_shape_error()
+    {
+        // Whether she qualifies is for the SMP rules to judge and record, so the
+        // failed submission is kept for the audit trail rather than refused here.
+        RtiRequestValidator.EnsureValid(FpsWith(Maternity() with { HasEvidenceOfPregnancy = false }));
+    }
+
+    [Fact]
+    public void A_maternity_entry_needs_an_employee_number()
+    {
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(FpsWith(Maternity(" "))));
+
+        Assert.Contains("maternityPay[0].employeeNumber", errors.Keys);
+    }
+
+    [Fact]
+    public void An_employee_cannot_appear_twice()
+    {
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(FpsWith(Maternity("001"), Maternity(" 001 "))));
+
+        Assert.Contains("appears more than once", Assert.Single(errors["maternityPay[1].employeeNumber"]));
+    }
+
+    [Fact]
+    public void Omitted_maternity_dates_are_missing_rather_than_year_one()
+    {
+        var entry = new SmpEmployeeRequest { EmployeeNumber = "001", AverageWeeklyEarnings = 300m };
+
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(FpsWith(entry)));
+
+        Assert.Equal(4, errors.Count);
+        foreach (var field in new[] { "expectedDueDate", "employmentStartDate", "leaveStartDate", "noticeGivenDate" })
+        {
+            Assert.Contains($"maternityPay[0].{field}", errors.Keys);
+        }
+    }
+
+    [Theory]
+    [InlineData(-0.01, "Must not be negative")]
+    [InlineData(10.005, "at most 2 decimal places")]
+    public void Maternity_earnings_that_cannot_be_money_are_a_field_error(double amount, string expected)
+    {
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(
+            FpsWith(Maternity() with { AverageWeeklyEarnings = (decimal)amount })));
+
+        Assert.Contains(errors["maternityPay[0].averageWeeklyEarnings"], m => m.Contains(expected));
+    }
+
+    [Fact]
+    public void A_negative_contractual_amount_names_its_week()
+    {
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(
+            FpsWith(Maternity() with { ContractualWeeklyPay = [300m, -1m] })));
+
+        Assert.Contains("maternityPay[0].contractualWeeklyPay[1]", errors.Keys);
+        Assert.DoesNotContain("maternityPay[0].contractualWeeklyPay[0]", errors.Keys);
+    }
+
+    [Fact]
+    public void More_than_thirty_nine_contractual_weeks_is_refused()
+    {
+        var errors = Refused(() => RtiRequestValidator.EnsureValid(
+            FpsWith(Maternity() with { ContractualWeeklyPay = Enumerable.Repeat(100m, 40).ToArray() })));
+
+        Assert.Contains("At most 39", Assert.Single(errors["maternityPay[0].contractualWeeklyPay"]));
     }
 
     [Theory]

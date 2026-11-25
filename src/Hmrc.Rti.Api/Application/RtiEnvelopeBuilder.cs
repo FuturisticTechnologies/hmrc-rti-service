@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Hmrc.Rti.Api.Application.Smp;
 using Hmrc.Rti.Api.Domain;
 using Hmrc.Rti.Api.Infrastructure;
 
@@ -40,7 +41,11 @@ public static partial class RtiEnvelopeBuilder
     /// deducted. Filed on or before the payment date.
     /// </summary>
     public static string BuildFps(
-        PayRunDto payRun, string payeReference, string accountsOfficeReference, string correlationId)
+        PayRunDto payRun,
+        string payeReference,
+        string accountsOfficeReference,
+        string correlationId,
+        IReadOnlyDictionary<string, SmpPayRunEvidence>? smpEvidence = null)
     {
         var envelope = new
         {
@@ -77,37 +82,55 @@ public static partial class RtiEnvelopeBuilder
                 employerPayrollCost = Money(payRun.EmployerPayrollCost),
                 netPay = Money(payRun.NetPay),
             },
-            employees = payRun.Lines.Select(line => new
-            {
-                payrollId = line.EmployeeNumber,
-                name = line.EmployeeName,
-                pay = new
-                {
-                    gross = Money(line.GrossPay),
-                    taxable = Money(line.TaxablePay),
-                    niable = Money(line.NiablePay),
-                    net = Money(line.NetPay),
-                },
-                paye = new
-                {
-                    taxCode = line.TaxCode,
-                    basis = line.TaxBasis,
-                    taxDeducted = Money(line.PayeTax),
-                    taxDueToDate = Money(line.TaxDueToDate),
-                    taxPaidToDate = Money(line.TaxPaidToDate),
-                },
-                nationalInsurance = new
-                {
-                    category = line.NiCategory,
-                    employee = Money(line.EmployeeNi),
-                    employer = Money(line.EmployerNi),
-                    employeeToDate = Money(line.EmployeeNiDueToDate),
-                    employerToDate = Money(line.EmployerNiDueToDate),
-                },
-            }).ToArray(),
+            employees = payRun.Lines.Select(line => BuildEmployee(line, smpEvidence)).ToArray(),
         };
 
         return JsonSerializer.Serialize(envelope, Json);
+    }
+
+    /// <summary>
+    /// One employee's FPS entry. A dictionary rather than an anonymous type so the
+    /// SMP evidence key exists only for employees who have it: an employee with
+    /// no maternity pay must serialise byte-for-byte as before, not gain a null.
+    /// </summary>
+    private static Dictionary<string, object?> BuildEmployee(
+        PayRunLineDto line, IReadOnlyDictionary<string, SmpPayRunEvidence>? smpEvidence)
+    {
+        var employee = new Dictionary<string, object?>
+        {
+            ["payrollId"] = line.EmployeeNumber,
+            ["name"] = line.EmployeeName,
+            ["pay"] = new
+            {
+                gross = Money(line.GrossPay),
+                taxable = Money(line.TaxablePay),
+                niable = Money(line.NiablePay),
+                net = Money(line.NetPay),
+            },
+            ["paye"] = new
+            {
+                taxCode = line.TaxCode,
+                basis = line.TaxBasis,
+                taxDeducted = Money(line.PayeTax),
+                taxDueToDate = Money(line.TaxDueToDate),
+                taxPaidToDate = Money(line.TaxPaidToDate),
+            },
+            ["nationalInsurance"] = new
+            {
+                category = line.NiCategory,
+                employee = Money(line.EmployeeNi),
+                employer = Money(line.EmployerNi),
+                employeeToDate = Money(line.EmployeeNiDueToDate),
+                employerToDate = Money(line.EmployerNiDueToDate),
+            },
+        };
+
+        if (smpEvidence is not null && smpEvidence.TryGetValue(line.EmployeeNumber, out var evidence))
+        {
+            employee["statutoryMaternityPay"] = evidence;
+        }
+
+        return employee;
     }
 
     /// <summary>

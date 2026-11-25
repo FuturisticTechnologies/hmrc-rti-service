@@ -222,6 +222,34 @@ public class SmpEligibilityTests
         Assert.False(outcome.IsEligible);
     }
 
+    // ------------------------------------------------------------- earliest start
+
+    [Fact]
+    public void SmpCannotStartBeforeTheEleventhWeekBeforeTheEwc()
+    {
+        // The 11th week before the EWC starts Sunday 29 March 2026.
+        var outcome = SmpEligibility.Evaluate(Eligible() with
+        {
+            LeaveStartDate = new DateOnly(2026, 3, 28),
+            NoticeGivenDate = new DateOnly(2026, 1, 1),
+        });
+
+        Assert.False(outcome.IsEligible);
+        Assert.Contains(outcome.Errors, e => e.Contains("cannot start before"));
+    }
+
+    [Fact]
+    public void SmpMayStartOnTheFirstDayOfTheEleventhWeek()
+    {
+        var outcome = SmpEligibility.Evaluate(Eligible() with
+        {
+            LeaveStartDate = new DateOnly(2026, 3, 29),
+            NoticeGivenDate = new DateOnly(2026, 1, 1),
+        });
+
+        Assert.True(outcome.IsEligible);
+    }
+
     // ---------------------------------------------------------------- evidence
 
     [Fact]

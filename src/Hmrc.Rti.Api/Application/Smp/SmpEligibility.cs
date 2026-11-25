@@ -9,10 +9,10 @@
 // anchored on the Expected Week of Childbirth (EWC), the week containing the
 // due date.
 //
-// Not covered yet (later SNOV-141 commits or out of scope): the SMP start date
-// and its 11-week earliest limit, premature births (which move the qualifying
-// week), and deriving average weekly earnings from pay history. AWE is supplied
-// by the payroll service, which owns that data.
+// Out of scope: premature births (which move the qualifying week), a later SMP
+// start triggered by birth or pregnancy-related absence, and deriving average
+// weekly earnings from pay history. AWE is supplied by the payroll service,
+// which owns that data.
 // ---------------------------------------------------------------------------
 namespace Hmrc.Rti.Api.Application.Smp;
 
@@ -113,6 +113,14 @@ public static class SmpEligibility
             errors.Add(
                 $"The pregnancy ended {endedOn:yyyy-MM-dd}, before the {PregnancyWeeksBeforeEwc}th week " +
                 $"before the expected week of childbirth ({pregnancyWeekStart:yyyy-MM-dd}).");
+        }
+
+        // SMP cannot start earlier than the 11th week before the EWC.
+        if (input.LeaveStartDate < pregnancyWeekStart)
+        {
+            errors.Add(
+                $"SMP cannot start before the {PregnancyWeeksBeforeEwc}th week before the expected week of " +
+                $"childbirth ({pregnancyWeekStart:yyyy-MM-dd}); the leave start was {input.LeaveStartDate:yyyy-MM-dd}.");
         }
 
         var noticeDays = input.LeaveStartDate.DayNumber - input.NoticeGivenDate.DayNumber;

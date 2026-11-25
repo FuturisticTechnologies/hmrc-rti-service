@@ -62,6 +62,40 @@ rejection will fail identically if replayed unchanged, so no automatic retry is
 scheduled; 5xx, 408 and 429 get exponential backoff (1, 2, 4, 8, 16 minutes) up
 to five attempts.
 
+## Statutory Maternity Pay (SNOV-141)
+
+The payroll API sends no maternity data, so the caller supplies it. An FPS
+request may carry a `maternity_pay` list; each entry (matched to a pay run line
+by `employee_number`) is assessed, scheduled and attached to the FPS payload as
+`employees[].statutoryMaternityPay`. The code is in `Application/Smp/` and is
+pure: no database, no HTTP.
+
+| Step | What it does |
+|---|---|
+| Eligibility | 26 weeks' continuous employment into the qualifying week (15th before the due week), average weekly earnings at or above the lower earnings limit, pregnancy status at the 11th week before the due week, SMP start no earlier than that week, 28 days' notice, MATB1 |
+| Schedule | 39 weeks from the SMP start date in 7-day blocks. Weeks 1-6 at 90% of average weekly earnings; weeks 7-39 at the lower of the standard weekly rate and 90% |
+| Contractual pay | The contractual amount includes SMP and never leaves the employee with less. The excess is a top-up, reported separately and never recoverable |
+| Recovery | `SmpRecovery`: 92% for standard employers; 100% plus 3% NIC compensation for small employers. Report on the EPS with `smp_recovered` and `smp_nic_compensation` |
+
+**Evidence.** The payload carries the weeks that overlap the pay period, each
+with its band and amounts, and a `rateChange` block giving the week (7), its
+start date, the amounts before and after, and whether it falls `before_period`,
+`in_period` or `after_period`. The same fact is written to the submission's
+audit trail as an `smp_assessed` event.
+
+**Refusals.** An ineligible employee, an employee not on the pay run, a pay
+period the SMP does not overlap, or a tax year with no configured rates all
+fail local validation: 422, with the submission kept as `Failed` and the
+evidence in its payload. Maternity pay is never dropped or guessed.
+
+**Rates.** `SmpRates.cs` holds the standard rate, lower earnings limit and the
+date each rate takes effect, per tax year. A year that is not in the table
+raises instead of falling back to the nearest one. Add a row each April.
+Average weekly earnings is an input: payroll owns the pay history.
+
+Not handled: premature births (which move the qualifying week) and an SMP start
+later than the requested leave start.
+
 ## Live-submission gating
 
 SOW gating rule 3 is enforced in code, not by convention. A live HMRC host is

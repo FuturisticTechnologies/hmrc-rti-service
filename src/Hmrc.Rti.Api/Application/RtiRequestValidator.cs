@@ -30,6 +30,7 @@ public static class RtiRequestValidator
         }
 
         CheckReferencesPresent(errors, request.EmployerPayeReference, request.AccountsOfficeReference);
+        CheckMaternityPay(errors, request.MaternityPay);
         Throw("FPS request", errors);
     }
 
@@ -110,6 +111,73 @@ public static class RtiRequestValidator
         if (accountsOfficeReference is null)
         {
             Add(errors, "accountsOfficeReference", "An accounts office reference is required.");
+        }
+    }
+
+    /// <summary>
+    /// Shape only: whether the employee qualifies is for the SMP rules to judge
+    /// and record. Dates bind to 0001-01-01 when omitted, which is not a date
+    /// anyone meant, so that is treated as missing.
+    /// </summary>
+    private static void CheckMaternityPay(
+        Dictionary<string, List<string>> errors, IReadOnlyList<SmpEmployeeRequest>? entries)
+    {
+        if (entries is null)
+        {
+            return;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var key = $"maternityPay[{i}]";
+            var entry = entries[i];
+
+            if (entry is null)
+            {
+                Add(errors, key, "An entry is required.");
+                continue;
+            }
+
+            var number = entry.EmployeeNumber?.Trim() ?? string.Empty;
+            if (number.Length == 0)
+            {
+                Add(errors, $"{key}.employeeNumber", "An employee number is required.");
+            }
+            else if (!seen.Add(number))
+            {
+                Add(errors, $"{key}.employeeNumber", $"Employee {number} appears more than once.");
+            }
+
+            RequireDate(errors, $"{key}.expectedDueDate", entry.ExpectedDueDate);
+            RequireDate(errors, $"{key}.employmentStartDate", entry.EmploymentStartDate);
+            RequireDate(errors, $"{key}.leaveStartDate", entry.LeaveStartDate);
+            RequireDate(errors, $"{key}.noticeGivenDate", entry.NoticeGivenDate);
+
+            CheckAmount(errors, $"{key}.averageWeeklyEarnings", entry.AverageWeeklyEarnings);
+
+            if (entry.ContractualWeeklyPay is { } contractual)
+            {
+                if (contractual.Count > Smp.SmpRates.MaxPaidWeeks)
+                {
+                    Add(errors, $"{key}.contractualWeeklyPay",
+                        $"At most {Smp.SmpRates.MaxPaidWeeks} weekly amounts (was {contractual.Count}).");
+                }
+
+                for (var week = 0; week < contractual.Count; week++)
+                {
+                    CheckAmount(errors, $"{key}.contractualWeeklyPay[{week}]", contractual[week]);
+                }
+            }
+        }
+    }
+
+    private static void RequireDate(Dictionary<string, List<string>> errors, string field, DateOnly value)
+    {
+        if (value == default)
+        {
+            Add(errors, field, "A date is required.");
         }
     }
 

@@ -5,6 +5,7 @@
 // state machine does not allow and appends an audit event. There is no code path
 // that sets Status directly - that is what makes the event log trustworthy.
 // ---------------------------------------------------------------------------
+using Hmrc.Rti.Api.Application.Smp;
 using Hmrc.Rti.Api.Domain;
 using Hmrc.Rti.Api.Infrastructure;
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +20,12 @@ public sealed record CreateFpsRequest
     public Guid PayRunId { get; init; }
     public string EmployerPayeReference { get; init; } = string.Empty;
     public string AccountsOfficeReference { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Statutory maternity pay facts for employees on this pay run. Optional;
+    /// each entry is assessed and its evidence attached to the FPS payload.
+    /// </summary>
+    public IReadOnlyList<SmpEmployeeRequest>? MaternityPay { get; init; }
 }
 
 public sealed record CreateEpsRequest
@@ -147,17 +154,30 @@ public sealed class SubmissionService(
             CreatedByUserId = tenant.UserId,
         };
 
+        var smp = SmpPayRunAssessor.AssessAll(request.MaternityPay, payRun);
+
         submission.Payload = RtiEnvelopeBuilder.BuildFps(
             payRun, submission.EmployerPayeReference,
-            submission.AccountsOfficeReference, submission.CorrelationId);
+            submission.AccountsOfficeReference, submission.CorrelationId, smp.Evidence);
         submission.PayloadHash = RtiEnvelopeBuilder.Hash(submission.Payload);
 
         db.Submissions.Add(submission);
         Append(submission, "created",
             $"FPS built from pay run {payRun.Id} ({payRun.EmployeeCount} employees).");
 
+        // The rate change is recorded in the audit trail as well as the payload.
+        foreach (var evidence in smp.Evidence.Values)
+        {
+            Append(submission, "smp_assessed", SmpPayRunAssessor.Describe(evidence));
+        }
+
         var validation = RtiEnvelopeBuilder.ValidateFps(
             payRun, submission.EmployerPayeReference, submission.AccountsOfficeReference);
+
+        if (smp.Errors.Count > 0)
+        {
+            validation = new ValidationOutcome(false, [.. validation.Errors, .. smp.Errors]);
+        }
 
         ApplyValidation(submission, validation);
         await db.SaveChangesAsync(ct);
