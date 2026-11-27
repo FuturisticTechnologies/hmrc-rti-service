@@ -48,36 +48,87 @@ public enum RtiSubmissionStatus
 /// </summary>
 public static class RtiSubmissionStateMachine
 {
-    private static readonly Dictionary<RtiSubmissionStatus, RtiSubmissionStatus[]> Allowed = new()
+    private static readonly RtiSubmissionStatus[] None = [];
+
+    /// <summary>
+    /// Every status has its own arm and there is no default, so a status added to
+    /// the enum without a decision here raises instead of behaving as terminal.
+    /// </summary>
+    public static IReadOnlyList<RtiSubmissionStatus> NextStates(RtiSubmissionStatus from) => from switch
     {
-        [RtiSubmissionStatus.Draft] = [RtiSubmissionStatus.Validated, RtiSubmissionStatus.Failed],
-        [RtiSubmissionStatus.Validated] = [RtiSubmissionStatus.Queued, RtiSubmissionStatus.Failed],
-        [RtiSubmissionStatus.Queued] = [RtiSubmissionStatus.Transmitting, RtiSubmissionStatus.Failed],
-        [RtiSubmissionStatus.Transmitting] =
-        [
-            RtiSubmissionStatus.Accepted,
-            RtiSubmissionStatus.Rejected,
-            RtiSubmissionStatus.Failed,
-        ],
+        RtiSubmissionStatus.Draft =>
+            [RtiSubmissionStatus.Validated, RtiSubmissionStatus.Failed],
+        RtiSubmissionStatus.Validated =>
+            [RtiSubmissionStatus.Queued, RtiSubmissionStatus.Failed],
+        RtiSubmissionStatus.Queued =>
+            [RtiSubmissionStatus.Transmitting, RtiSubmissionStatus.Failed],
+        RtiSubmissionStatus.Transmitting =>
+            [RtiSubmissionStatus.Accepted, RtiSubmissionStatus.Rejected, RtiSubmissionStatus.Failed],
         // Rejected and Failed are both recoverable: correct, then re-queue.
-        [RtiSubmissionStatus.Rejected] = [RtiSubmissionStatus.Queued],
-        [RtiSubmissionStatus.Failed] = [RtiSubmissionStatus.Queued],
+        RtiSubmissionStatus.Rejected => [RtiSubmissionStatus.Queued],
+        RtiSubmissionStatus.Failed => [RtiSubmissionStatus.Queued],
         // Accepted is terminal. An accepted submission is amended by sending a
         // further FPS, never by mutating the one HMRC already holds.
-        [RtiSubmissionStatus.Accepted] = [],
+        RtiSubmissionStatus.Accepted => None,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(from), from, "Status has no entry in the RTI state machine."),
     };
 
-    public static bool CanTransition(RtiSubmissionStatus from, RtiSubmissionStatus to) =>
-        Allowed.TryGetValue(from, out var targets) && targets.Contains(to);
+    public static bool CanTransition(RtiSubmissionStatus from, RtiSubmissionStatus to)
+    {
+        Validate(to);
+        return NextStates(from).Contains(to);
+    }
 
-    public static IReadOnlyList<RtiSubmissionStatus> NextStates(RtiSubmissionStatus from) =>
-        Allowed.TryGetValue(from, out var targets) ? targets : [];
+    /// <summary>Raises <see cref="IllegalTransitionException"/> unless the move is legal.</summary>
+    public static void EnsureCanTransition(RtiSubmissionStatus from, RtiSubmissionStatus to)
+    {
+        Validate(to);
+        var allowed = NextStates(from);
+        if (!allowed.Contains(to))
+        {
+            throw new IllegalTransitionException(from, to, allowed);
+        }
+    }
 
-    public static bool IsTerminal(RtiSubmissionStatus status) =>
-        status == RtiSubmissionStatus.Accepted;
+    public static bool IsTerminal(RtiSubmissionStatus status) => status switch
+    {
+        RtiSubmissionStatus.Accepted => true,
+        RtiSubmissionStatus.Draft or RtiSubmissionStatus.Validated or RtiSubmissionStatus.Queued
+            or RtiSubmissionStatus.Transmitting or RtiSubmissionStatus.Rejected
+            or RtiSubmissionStatus.Failed => false,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(status), status, "Status has no entry in the RTI state machine."),
+    };
 
-    public static bool IsRetryable(RtiSubmissionStatus status) =>
-        status is RtiSubmissionStatus.Failed or RtiSubmissionStatus.Rejected;
+    public static bool IsRetryable(RtiSubmissionStatus status) => status switch
+    {
+        RtiSubmissionStatus.Failed or RtiSubmissionStatus.Rejected => true,
+        RtiSubmissionStatus.Draft or RtiSubmissionStatus.Validated or RtiSubmissionStatus.Queued
+            or RtiSubmissionStatus.Transmitting or RtiSubmissionStatus.Accepted => false,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(status), status, "Status has no entry in the RTI state machine."),
+    };
+
+    private static void Validate(RtiSubmissionStatus status)
+    {
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Status has no entry in the RTI state machine.");
+        }
+    }
+}
+
+/// <summary>Raised when a status change is not in the legal transition table.</summary>
+public sealed class IllegalTransitionException(
+    RtiSubmissionStatus from, RtiSubmissionStatus to, IReadOnlyList<RtiSubmissionStatus> allowed)
+    : InvalidOperationException(
+        $"Illegal transition {from} -> {to}. Allowed: " +
+        (allowed.Count == 0 ? "none (terminal)" : string.Join(", ", allowed)) + ".")
+{
+    public RtiSubmissionStatus From { get; } = from;
+    public RtiSubmissionStatus To { get; } = to;
 }
 
 public sealed class RtiSubmission
@@ -132,6 +183,37 @@ public sealed class RtiSubmission
     public DateTimeOffset? SubmittedAt { get; set; }
 
     public List<RtiSubmissionEvent> Events { get; set; } = [];
+
+    /// <summary>
+    /// Moves the submission to a new status. Validates the move, assigns the
+    /// status and appends the audit event in one step, so the two cannot drift
+    /// apart. Raises <see cref="IllegalTransitionException"/> and changes nothing
+    /// when the move is not legal.
+    /// </summary>
+    public RtiSubmissionEvent TransitionTo(
+        RtiSubmissionStatus to, string eventType, string detail, Guid? actorUserId = null)
+    {
+        var from = Status;
+        RtiSubmissionStateMachine.EnsureCanTransition(from, to);
+
+        var now = DateTimeOffset.UtcNow;
+        Status = to;
+        UpdatedAt = now;
+
+        var evt = new RtiSubmissionEvent
+        {
+            SubmissionId = Id,
+            TenantId = TenantId,
+            EventType = eventType,
+            FromStatus = from,
+            ToStatus = to,
+            Detail = detail.Length <= 2000 ? detail : detail[..2000],
+            ActorUserId = actorUserId == Guid.Empty ? null : actorUserId,
+            OccurredAt = now,
+        };
+        Events.Add(evt);
+        return evt;
+    }
 }
 
 /// <summary>

@@ -45,6 +45,137 @@ public class RtiSubmissionStateMachineTests
         }
     }
 
+    private static readonly Dictionary<RtiSubmissionStatus, RtiSubmissionStatus[]> Expected = new()
+    {
+        [RtiSubmissionStatus.Draft] = [RtiSubmissionStatus.Validated, RtiSubmissionStatus.Failed],
+        [RtiSubmissionStatus.Validated] = [RtiSubmissionStatus.Queued, RtiSubmissionStatus.Failed],
+        [RtiSubmissionStatus.Queued] = [RtiSubmissionStatus.Transmitting, RtiSubmissionStatus.Failed],
+        [RtiSubmissionStatus.Transmitting] =
+            [RtiSubmissionStatus.Accepted, RtiSubmissionStatus.Rejected, RtiSubmissionStatus.Failed],
+        [RtiSubmissionStatus.Rejected] = [RtiSubmissionStatus.Queued],
+        [RtiSubmissionStatus.Failed] = [RtiSubmissionStatus.Queued],
+        [RtiSubmissionStatus.Accepted] = [],
+    };
+
+    public static TheoryData<RtiSubmissionStatus, RtiSubmissionStatus> AllPairs()
+    {
+        var data = new TheoryData<RtiSubmissionStatus, RtiSubmissionStatus>();
+        foreach (var from in Enum.GetValues<RtiSubmissionStatus>())
+        {
+            foreach (var to in Enum.GetValues<RtiSubmissionStatus>())
+            {
+                data.Add(from, to);
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(AllPairs))]
+    public void Every_pair_matches_the_declared_table(RtiSubmissionStatus from, RtiSubmissionStatus to)
+    {
+        var legal = Expected[from].Contains(to);
+
+        Assert.Equal(legal, RtiSubmissionStateMachine.CanTransition(from, to));
+
+        if (legal)
+        {
+            RtiSubmissionStateMachine.EnsureCanTransition(from, to);
+        }
+        else
+        {
+            var ex = Assert.Throws<IllegalTransitionException>(
+                () => RtiSubmissionStateMachine.EnsureCanTransition(from, to));
+            Assert.Equal(from, ex.From);
+            Assert.Equal(to, ex.To);
+        }
+    }
+
+    [Fact]
+    public void An_undefined_status_raises_rather_than_falling_through()
+    {
+        var bogus = (RtiSubmissionStatus)99;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => RtiSubmissionStateMachine.NextStates(bogus));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RtiSubmissionStateMachine.IsTerminal(bogus));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RtiSubmissionStateMachine.IsRetryable(bogus));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => RtiSubmissionStateMachine.CanTransition(bogus, RtiSubmissionStatus.Draft));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => RtiSubmissionStateMachine.CanTransition(RtiSubmissionStatus.Draft, bogus));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => RtiSubmissionStateMachine.EnsureCanTransition(RtiSubmissionStatus.Draft, bogus));
+    }
+
+    [Fact]
+    public void TransitionTo_assigns_status_and_appends_exactly_one_event()
+    {
+        var actor = Guid.NewGuid();
+        var submission = new RtiSubmission { TenantId = Guid.NewGuid() };
+
+        var evt = submission.TransitionTo(
+            RtiSubmissionStatus.Validated, "validated", "Local validation passed.", actor);
+
+        Assert.Equal(RtiSubmissionStatus.Validated, submission.Status);
+        var recorded = Assert.Single(submission.Events);
+        Assert.Same(evt, recorded);
+        Assert.Equal(RtiSubmissionStatus.Draft, recorded.FromStatus);
+        Assert.Equal(RtiSubmissionStatus.Validated, recorded.ToStatus);
+        Assert.Equal("validated", recorded.EventType);
+        Assert.Equal(submission.Id, recorded.SubmissionId);
+        Assert.Equal(submission.TenantId, recorded.TenantId);
+        Assert.Equal(actor, recorded.ActorUserId);
+    }
+
+    [Fact]
+    public void An_illegal_TransitionTo_changes_nothing()
+    {
+        var submission = new RtiSubmission();
+        var before = submission.UpdatedAt;
+
+        Assert.Throws<IllegalTransitionException>(() =>
+            submission.TransitionTo(RtiSubmissionStatus.Accepted, "accepted", "skipped the queue"));
+
+        Assert.Equal(RtiSubmissionStatus.Draft, submission.Status);
+        Assert.Empty(submission.Events);
+        Assert.Equal(before, submission.UpdatedAt);
+    }
+
+    [Fact]
+    public void An_accepted_submission_cannot_be_moved_by_TransitionTo()
+    {
+        var submission = new RtiSubmission();
+        foreach (var to in new[]
+                 {
+                     RtiSubmissionStatus.Validated, RtiSubmissionStatus.Queued,
+                     RtiSubmissionStatus.Transmitting, RtiSubmissionStatus.Accepted,
+                 })
+        {
+            submission.TransitionTo(to, to.ToString().ToLowerInvariant(), "step");
+        }
+
+        var events = submission.Events.Count;
+
+        foreach (var target in Enum.GetValues<RtiSubmissionStatus>())
+        {
+            Assert.Throws<IllegalTransitionException>(
+                () => submission.TransitionTo(target, "mutate", "must not happen"));
+        }
+
+        Assert.Equal(RtiSubmissionStatus.Accepted, submission.Status);
+        Assert.Equal(events, submission.Events.Count);
+    }
+
+    [Fact]
+    public void An_empty_actor_is_recorded_as_no_actor()
+    {
+        var submission = new RtiSubmission();
+        var evt = submission.TransitionTo(
+            RtiSubmissionStatus.Validated, "validated", "ok", Guid.Empty);
+        Assert.Null(evt.ActorUserId);
+    }
+
     [Fact]
     public void Only_failed_and_rejected_are_retryable()
     {
